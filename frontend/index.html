@@ -18,8 +18,7 @@
           <p class="eyebrow">MULTI-CHAIN · DEX SCREENER DATA</p>
           <h1>Liquidity operations,<br /><span class="accent-text">one desk.</span></h1>
           <p class="muted hero-sub">
-            Satu desk untuk semua operasi LP multi-chainmu — cari token, buka LP, pantau fee &amp; PnL secara realtime, dan biarkan Agent Crew bekerja. Demo simulasi versi lokal v4: tanpa wallet asli, tanpa dana nyata, tanpa transaksi
-            on-chain.
+            Satu desk simulasi untuk operasi LP multi-chain — pantau fee &amp; PnL, cari token, dan jalankan Agent Crew. Koneksi wallet browser saat ini hanya membaca saldo Base Sepolia testnet; tidak membaca private key atau mengirim transaksi.
           </p>
           <p class="muted"><button id="resetDemoBtn" class="linkish" type="button">Reset demo ke keadaan default</button></p>
         </div>
@@ -53,7 +52,7 @@
             <span class="rt-title">LIVE · PORTFOLIO REALTIME</span>
           </div>
           <p class="muted">
-            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Tetap simulasi — tanpa wallet/dana nyata. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
+            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Posisi dan dana desk tetap simulasi; koneksi wallet hanya baca saldo Base Sepolia testnet. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
             Profit + Card Studio, Copy LP, Top LP dari cache server — scan sumber maks. tiap 5 menit agar tidak kena batas API publik). Refresh dilewati sesaat bila ada modal terbuka, kamu sedang mengetik, konfirmasi hapus tampil, atau
             detail Discover terbuka.
           </p>
@@ -95,6 +94,27 @@
             <label class="switch-wrap"
               ><span class="switch orange"><input type="checkbox" id="stripTpSlToggle" /><span class="slider"></span></span
             ></label>
+          </div>
+        </section>
+
+        <!-- WALLET BROWSER: BASE SEPOLIA TESTNET ONLY -->
+        <section class="panel wallet-panel" id="walletPanel">
+          <div class="wallet-panel-head">
+            <div>
+              <p</div> class="eyebrow">WALLET BROWSER · BASE SEPOLIA TESTNET</p>
+              <h2>Hubungkan wallet testnet</h2>
+              <p class="muted">Koneksi EIP-1193 untuk membaca alamat dan saldo ETH testnet. Tidak ada private key yang dibaca/disimpan, dan belum ada transaksi yang ditandatangani.</p>
+            </div>
+            <div class="wallet-actions">
+              <button id="walletConnectBtn" class="primary" type="button">Hubungkan wallet</button>
+              <button id="walletSwitchBtn" class="secondary" type="button" hidden>Pindah ke Base Sepolia</button>
+            </div>
+          </div>
+          <div class="wallet-readout">
+            <div><span>Status</span><strong id="walletStatus" role="status" aria-live="polite">Belum terhubung</strong></div>
+            <div><span>Alamat wallet</span><strong id="walletAddress">—</strong></div>
+            <div><span>Jaringan</span><strong id="walletNetwork">—</strong></div>
+            <div><span>Saldo native</span><strong id="walletNativeBalance">—</strong></div>
           </div>
         </section>
 

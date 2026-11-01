@@ -4,11 +4,12 @@ Dokumen ini menjelaskan cara menjalankan proyek, arsitekturnya, dan **peta
 fitur**: setiap fitur beserta file frontend, file/endpoint/fungsi backend,
 dan sumber datanya.
 
-> **Batasan yang berlaku di seluruh proyek:** ini REKREASI SETIA dari Demo LP
-> Desk hosted (bukan salinan byte-per-byte). Semua SIMULASI PENUH — tanpa
-> wallet asli, tanpa seed phrase/private key, tanpa dana asli, tanpa
-> transaksi on-chain nyata. Data yang tidak tersedia dari sumber publik
-> ditampilkan kosong atau dilabeli jujur, tidak pernah dikarang.
+> **Batasan:** posisi, trade, saldo desk, fee, dan PnL tetap simulasi. Wallet
+> browser opsional hanya dipakai read-only pada Base Sepolia testnet untuk
+> menampilkan alamat dan saldo ETH testnet. Aplikasi tidak membaca/menyimpan
+> private key, tidak mengirimnya ke server, dan belum menandatangani atau
+> mengirim transaksi. Data yang tidak tersedia dari sumber publik ditampilkan
+> kosong atau dilabeli jujur, tidak pernah dikarang.
 
 ---
 
@@ -199,6 +200,15 @@ Saldo USDC + token per chain, buy/sell simulasi, riwayat transaksi, semua
 persisten di `data.json`. Frontend: `renderBalances()`,
 `renderTransactions()`, `doTrade()`, panel `#balancesPanel`. Backend:
 `POST /api/trade`, `defaultState()`, `saveState()`.
+
+Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi: pengguna harus
+menyetujui `eth_requestAccounts`; UI hanya membaca `eth_chainId` dan
+`eth_getBalance` saat jaringan Base Sepolia (84532) aktif. Tombol pindah
+jaringan memakai `wallet_switchEthereumChain` / `wallet_addEthereumChain`.
+Alamat hanya berada di memori frontend. Tidak ada private key, transaksi
+signing, atau endpoint backend wallet pada tahap ini. Frontend:
+`initBrowserWallet()`, `connectBrowserWallet()`, `refreshBrowserWallet()`,
+panel `#walletPanel`.
 
 ### 5. Simulasi Meteora DLMM (Solana)
 Price bins + active bin, bin step, strategi Spot/Curve/Bid-Ask,

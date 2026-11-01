@@ -1,5 +1,6 @@
 "use strict";
-/* LP Desk local frontend v4 — simulation only. No real wallet, no real funds.
+/* LP Desk local frontend v4 — LP positions remain simulation-only.
+ * Browser wallet is read-only for Base Sepolia; no keys or transaction signing.
  * SATU font stack dipakai UI (CSS) dan canvas Card Studio (FONT_STACK di sini). */
 const $ = (id) => document.getElementById(id);
 const FONT_STACK = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif';
@@ -42,6 +43,12 @@ let lpSideVal = "Both";
 let lpStrategyVal = "Spot";
 let lpPreset = "wide";
 let rtData = null;
+let walletProvider = null;
+let walletAddress = "";
+let walletChainId = "";
+let walletNativeBalance = null;
+let walletBoundProvider = null;
+const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
 const CHAIN_COLORS = { SOL: "#14f195", BASE: "#5b8cff", ROBINHOOD: "#00c805", BSC: "#f0b90b", HYPEREVM: "#a7f3ea", ARC: "#7d9bff", ETH: "#8a9cf5" };
 
@@ -175,6 +182,133 @@ function renderBalances() {
       "</div>"
     );
   }).join("");
+}
+function setWalletStatus(message, isError) {
+  const el = $("walletStatus");
+  el.textContent = message;
+  el.classList.toggle("error", !!isError);
+}
+function renderBrowserWallet() {
+  $("walletAddress").textContent = walletAddress ? walletAddress.slice(0, 6) + "…" + walletAddress.slice(-4) : "—";
+  const onBaseSepolia = walletChainId.toLowerCase() === BASE_SEPOLIA_CHAIN_ID;
+  const chainNumber = walletChainId ? Number.parseInt(walletChainId, 16) : 0;
+  $("walletNetwork").textContent = !walletChainId ? "—" : onBaseSepolia ? "Base Sepolia · 84532" : "Chain ID " + chainNumber;
+  $("walletNativeBalance").textContent = walletNativeBalance == null ? "—" : walletNativeBalance + " ETH";
+  $("walletSwitchBtn").hidden = !walletAddress || onBaseSepolia;
+  $("walletConnectBtn").textContent = walletAddress ? "Ganti wallet" : "Hubungkan wallet";
+}
+function weiToEth(weiHex) {
+  const wei = BigInt(weiHex);
+  const whole = wei / 1000000000000000000n;
+  const fraction = (wei % 1000000000000000000n).toString().padStart(18, "0").slice(0, 6);
+  return whole.toString() + "." + fraction;
+}
+function bindWalletEvents(provider) {
+  if (!provider || walletBoundProvider === provider || typeof provider.on !== "function") return;
+  walletBoundProvider = provider;
+  provider.on("accountsChanged", (accounts) => {
+    walletAddress = Array.isArray(accounts) ? (accounts[0] || "") : "";
+    walletNativeBalance = null;
+    renderBrowserWallet();
+    if (walletAddress) refreshBrowserWallet();
+    else setWalletStatus("Wallet tidak terhubung di aplikasi.");
+  });
+  provider.on("chainChanged", (chainId) => {
+    walletChainId = String(chainId || "");
+    walletNativeBalance = null;
+    renderBrowserWallet();
+    if (walletAddress) refreshBrowserWallet();
+  });
+  provider.on("disconnect", () => {
+    walletAddress = "";
+    walletChainId = "";
+    walletNativeBalance = null;
+    renderBrowserWallet();
+    setWalletStatus("Wallet terputus.");
+  });
+}
+async function refreshBrowserWallet() {
+  if (!walletProvider || !walletAddress) return;
+  try {
+    walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
+    if (walletChainId.toLowerCase() === BASE_SEPOLIA_CHAIN_ID) {
+      const balance = await walletProvider.request({ method: "eth_getBalance", params: [walletAddress, "latest"] });
+      walletNativeBalance = weiToEth(balance);
+      setWalletStatus("Terhubung · read-only");
+    } else {
+      walletNativeBalance = null;
+      setWalletStatus("Jaringan berbeda. Pindah ke Base Sepolia untuk melanjutkan.", true);
+    }
+    renderBrowserWallet();
+  } catch (e) {
+    walletNativeBalance = null;
+    renderBrowserWallet();
+    setWalletStatus("Gagal membaca jaringan/saldo: " + (e && e.message ? e.message : "provider error"), true);
+  }
+}
+async function connectBrowserWallet() {
+  if (!window.ethereum || typeof window.ethereum.request !== "function") {
+    setWalletStatus("Wallet EIP-1193 tidak terdeteksi. Buka aplikasi ini di browser dengan wallet extension.", true);
+    return;
+  }
+  walletProvider = window.ethereum;
+  bindWalletEvents(walletProvider);
+  const button = $("walletConnectBtn");
+  button.disabled = true;
+  try {
+    const accounts = await walletProvider.request({ method: "eth_requestAccounts" });
+    walletAddress = Array.isArray(accounts) ? (accounts[0] || "") : "";
+    if (!walletAddress) throw new Error("Wallet tidak mengembalikan alamat akun.");
+    setWalletStatus("Wallet terhubung. Memeriksa Base Sepolia…");
+    await refreshBrowserWallet();
+  } catch (e) {
+    setWalletStatus(e && e.code === 4001 ? "Permintaan koneksi ditolak di wallet." : "Koneksi gagal: " + (e && e.message ? e.message : "provider error"), true);
+  } finally {
+    button.disabled = false;
+    renderBrowserWallet();
+  }
+}
+async function switchToBaseSepolia() {
+  if (!walletProvider) return;
+  const button = $("walletSwitchBtn");
+  button.disabled = true;
+  try {
+    await walletProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BASE_SEPOLIA_CHAIN_ID }] });
+  } catch (e) {
+    if (e && e.code === 4902) {
+      try {
+        await walletProvider.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: BASE_SEPOLIA_CHAIN_ID,
+            chainName: "Base Sepolia",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://sepolia.base.org"],
+            blockExplorerUrls: ["https://sepolia.basescan.org"],
+          }],
+        });
+      } catch (addError) {
+        setWalletStatus("Gagal menambahkan Base Sepolia: " + (addError.message || "wallet error"), true);
+      }
+    } else {
+      setWalletStatus(e && e.code === 4001 ? "Permintaan pindah jaringan ditolak di wallet." : "Gagal pindah jaringan: " + (e && e.message ? e.message : "wallet error"), true);
+    }
+  } finally {
+    button.disabled = false;
+    await refreshBrowserWallet();
+  }
+}
+function initBrowserWallet() {
+  walletProvider = window.ethereum || null;
+  if (walletProvider) {
+    bindWalletEvents(walletProvider);
+    setWalletStatus("Wallet ditemukan. Klik Hubungkan untuk memberi izin akses akun.");
+  } else {
+    setWalletStatus("Wallet EIP-1193 tidak terdeteksi. Gunakan browser dengan wallet extension.", true);
+  }
+  renderBrowserWallet();
+  $("walletConnectBtn").addEventListener("click", connectBrowserWallet);
+  $("walletSwitchBtn").addEventListener("click", switchToBaseSepolia);
 }
 
 function renderTransactions() {
@@ -2416,6 +2550,7 @@ function fillChainSelects() {
 }
 function init() {
   if (location.protocol === "file:") $("fileWarning").hidden = false;
+  initBrowserWallet();
   fillChainSelects();
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
   document.querySelectorAll("[data-agent]").forEach((el) => el.addEventListener("click", () => openAgentModal(el.dataset.agent)));
