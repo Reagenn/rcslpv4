@@ -9,5 +9,5 @@ Thumbs.db
 # Isolated verification instance (keep evidence/)
 .cursor/skills/verify-lp-desk/run/
 
-# Runtime state (posisi, PnL, settings pribadi)
+# Runtime state (positions, PnL, and local settings)
 backend/data/data.json

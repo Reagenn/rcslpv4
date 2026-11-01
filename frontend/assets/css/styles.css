@@ -1838,6 +1838,69 @@ input[type="range"] {
 .spacer {
   flex: 1;
 }
+/* Desk LP controls */
+.desk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+}
+.desk-toolbar input,
+.desk-toolbar select,
+.rate-field input {
+  background: #0d0d10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+.desk-toolbar input[type="search"] {
+  flex: 1;
+  min-width: 180px;
+}
+.rate-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.rate-field input {
+  width: 110px;
+  font-family: var(--font-num);
+}
+.desk-calendar {
+  margin-top: 8px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.pos-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.pos-table th,
+.pos-table td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  font-family: var(--font-num);
+}
+.pos-table th {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+#positionsList[hidden],
+#positionsCount[hidden],
+#deskCalendar[hidden] {
+  display: none !important;
+}
 .cal-week {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -2263,5 +2326,27 @@ label.check input {
   }
   .discover-table .disc-detail td::before {
     content: "";
+  }
+}
+@media (max-width: 600px) {
+  .desk-toolbar {
+    align-items: stretch;
+  }
+  .desk-toolbar .seg {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  #posFilterSeg button,
+  #deskModeSeg button,
+  #posLayoutSeg button {
+    padding: 7px 9px;
+    white-space: nowrap;
+  }
+  .rate-field {
+    flex: 1 1 100%;
+  }
+  .pos-table th,
+  .pos-table td {
+    padding: 8px 7px;
   }
 }

@@ -29,6 +29,15 @@ let copyTokenChange24h = 0;
    statistik + sidebar Monthly). */
 let chainFilter = "ALL";
 let posStatusFilter = "open";
+let deskMode = "networth";
+let posLayout = "cards";
+let posSortOrder = "newest";
+let posSearchQuery = "";
+let balanceCurrency = "USD";
+let balanceRates = {
+  idr: Number(localStorage.getItem("rcslpv4-rate-idr")) || 0,
+  eth: Number(localStorage.getItem("rcslpv4-rate-eth")) || 0,
+};
 let lpSideVal = "Both";
 let lpStrategyVal = "Spot";
 let lpPreset = "wide";
@@ -138,9 +147,21 @@ async function loadState() {
   return deskState;
 }
 
+function formatBalanceAmount(usd) {
+  if (balanceCurrency === "IDR") {
+    return balanceRates.idr > 0 ? "Rp" + Math.round(usd * balanceRates.idr).toLocaleString("id-ID") : "Atur kurs IDR";
+  }
+  if (balanceCurrency === "ETH") {
+    return balanceRates.eth > 0 ? (usd / balanceRates.eth).toFixed(6) + " ETH" : "Atur harga ETH";
+  }
+  return fmtMoney(usd);
+}
 function renderBalances() {
   if (!deskState) return;
   const grid = $("balanceGrid");
+  const totalUsd = CHAINS.reduce((sum, c) => sum + (Number(deskState.balances?.[c]?.usdc) || 0), 0);
+  $("balanceTotal").textContent = formatBalanceAmount(totalUsd);
+  document.querySelectorAll("#balCurSeg [data-cur]").forEach((b) => b.classList.toggle("active", b.dataset.cur === balanceCurrency));
   grid.innerHTML = CHAINS.map((c) => {
     const b = (deskState.balances && deskState.balances[c]) || { usdc: 0, tokens: {} };
     const toks = Object.entries(b.tokens || {}).filter(([, t]) => (t.qty || 0) > 0.000001);
@@ -148,9 +169,9 @@ function renderBalances() {
       '<div class="balance-card"><span class="chain-badge">' +
       c +
       "</span><strong>" +
-      fmtMoney(b.usdc) +
+      formatBalanceAmount(Number(b.usdc) || 0) +
       "</strong>" +
-      (toks.length ? toks.map(([addr, t]) => '<span class="tok">' + esc(t.symbol) + ": " + Number(t.qty).toFixed(4) + "</span>").join("<br>") : '<span class="tok">Tidak ada token</span>') +
+      (toks.length ? toks.map(([, t]) => '<span class="tok">' + esc(t.symbol) + ": " + Number(t.qty).toFixed(4) + "</span>").join("<br>") : '<span class="tok">Tidak ada token simulasi</span>') +
       "</div>"
     );
   }).join("");
@@ -255,26 +276,73 @@ function renderTpSlStrip() {
   if (tog) tog.checked = armed;
 }
 
+function renderPositionTable(positions) {
+  const rows = positions.map((p) => {
+    const live = p.status === "open";
+    const pnl = live ? round2Client((Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)) : Number(p.closePnl) || 0;
+    const actions = live
+      ? '<button type="button" class="text-btn" data-act="claim" data-id="' + esc(p.id) + '">Claim</button> <button type="button" class="text-btn" data-act="close" data-id="' + esc(p.id) + '">Close</button>'
+      : "—";
+    return "<tr><td><strong>" + esc(p.symbol || "—") + "</strong><br>" + esc(p.pair || "—") + "</td><td>" + esc(p.chain || "—") + "</td><td>" + (live ? (p.inRange ? "In range" : "Out of range") : esc(posCategory(p))) + "</td><td>" + fmtMoney(p.amount) + "</td><td>" + fmtMoney(p.value) + "</td><td class=\"" + (pnl >= 0 ? "pos" : "neg") + "\">" + (pnl > 0 ? "+" : "") + fmtMoney(pnl) + "</td><td>" + fmtMoney((Number(p.fees) || 0) + (Number(p.rewards) || 0)) + "</td><td>" + actions + "</td></tr>";
+  }).join("");
+  return '<div class="table-wrap"><table class="pos-table"><thead><tr><th>Token / Pair</th><th>Chain</th><th>Status</th><th>Deposit</th><th>Value</th><th>PnL</th><th>Fees</th><th>Aksi</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+}
+function attachPositionActions(list) {
+  list.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.addEventListener("click", () => handlePositionAction(btn.dataset.act, btn.dataset.id, btn));
+  });
+}
 function renderPositions() {
   if (!deskState) return;
   const list = $("positionsList");
   const positions = deskState.positions || [];
-  // Filter Range book: kategori (Open/Closed/Leftover) + filter chain bar.
   const counts = { open: 0, closed: 0, leftover: 0 };
   for (const p of positions) counts[posCategory(p)]++;
   $("posCountOpen").textContent = counts.open;
   $("posCountClosed").textContent = counts.closed;
   $("posCountLeftover").textContent = counts.leftover;
+  $("posCountView").textContent = "0";
   document.querySelectorAll("#posFilterSeg [data-pfilter]").forEach((b) => b.classList.toggle("active", b.dataset.pfilter === posStatusFilter));
-  const shown = positions.filter((p) => posCategory(p) === posStatusFilter && (chainFilter === "ALL" || p.chain === chainFilter));
-  $("positionsCount").textContent = "Menampilkan " + shown.length + " dari " + positions.length + " posisi · filter chain: " + (chainFilter === "ALL" ? "All networks" : chainFilter);
+  document.querySelectorAll("#deskModeSeg [data-dmode]").forEach((b) => b.classList.toggle("active", b.dataset.dmode === deskMode));
+  document.querySelectorAll("#posLayoutSeg [data-layout]").forEach((b) => b.classList.toggle("active", b.dataset.layout === posLayout));
+  const calendarMode = deskMode === "calendar";
+  list.hidden = calendarMode;
+  $("positionsCount").hidden = calendarMode;
+  $("deskCalendar").hidden = !calendarMode;
+  $("holdingPanel").hidden = calendarMode;
+  if (calendarMode) {
+    renderDeskCalendar();
+    return;
+  }
+  let shown = posStatusFilter === "view" ? [] : positions.filter((p) => posCategory(p) === posStatusFilter && (chainFilter === "ALL" || p.chain === chainFilter));
+  const query = posSearchQuery.trim().toLocaleLowerCase("id-ID");
+  if (query) shown = shown.filter((p) => [p.symbol, p.pair, p.chain, p.address, p.poolAddress].some((v) => String(v || "").toLocaleLowerCase("id-ID").includes(query)));
+  shown.sort((a, b) => {
+    const ta = Date.parse(a.createdAt || a.closedAt || "") || 0;
+    const tb = Date.parse(b.createdAt || b.closedAt || "") || 0;
+    return posSortOrder === "oldest" ? ta - tb : tb - ta;
+  });
+  $("positionsCount").textContent = posStatusFilter === "view"
+    ? "View Yanman · read-only · data profil belum terhubung"
+    : "Menampilkan " + shown.length + " dari " + positions.length + " posisi · filter chain: " + (chainFilter === "ALL" ? "All networks" : chainFilter);
+  if (posStatusFilter === "view") {
+    list.innerHTML = '<p class="muted">View Yanman bersifat read-only. Data posisi profil belum tersedia pada versi simulasi lokal ini.</p>';
+    renderHolding();
+    return;
+  }
   if (!positions.length) {
-    list.innerHTML = '<p class="muted">Belum ada posisi. Buka posisi pertama lewat terminal Open LP atau Copy LP.</p>';
+    list.innerHTML = '<p class="muted">Belum ada posisi. Buka posisi pertama lewat Open LP atau Copy LP.</p>';
     renderHolding();
     return;
   }
   if (!shown.length) {
-    list.innerHTML = '<p class="muted">Tidak ada posisi pada filter ini.</p>';
+    list.innerHTML = '<p class="muted">Tidak ada posisi yang cocok dengan filter ini.</p>';
+    renderHolding();
+    return;
+  }
+  if (posLayout === "table") {
+    list.innerHTML = renderPositionTable(shown);
+    attachPositionActions(list);
     renderHolding();
     return;
   }
@@ -434,9 +502,7 @@ function renderPositions() {
       );
     })
     .join("");
-  list.querySelectorAll("button[data-act]").forEach((btn) => {
-    btn.addEventListener("click", () => handlePositionAction(btn.dataset.act, btn.dataset.id, btn));
-  });
+  attachPositionActions(list);
   renderHolding();
 }
 function round2Client(n) {
@@ -928,6 +994,31 @@ async function openLp() {
 
 /* ---------------- Monthly profit ---------------- */
 
+function renderCalendarGrid(targetId, days, month) {
+  const [y, m] = month.split("-").map(Number);
+  const today = new Date().toISOString().slice(0, 10);
+  const offset = new Date(y, m - 1, 1).getDay();
+  let cells = "";
+  for (let i = 0; i < offset; i++) cells += '<div class="cal-blank"></div>';
+  cells += (days || []).map((d) =>
+    '<div class="cal-day' + (d.pnl > 0 ? " up" : d.pnl < 0 ? " down" : "") + (d.date === today ? " today" : "") + '"><span class="d">' +
+    d.day +
+    "</span>" +
+    (d.pnl !== 0 ? '<span class="pnl-val ' + (d.pnl > 0 ? "pos" : "neg") + '">' + (d.pnl > 0 ? "+" : "−") + fmtMoney(Math.abs(d.pnl)) + '</span><span class="cnt">' + d.positions + " posisi</span>" : "") +
+    "</div>",
+  ).join("");
+  $(targetId).innerHTML = cells;
+}
+async function renderDeskCalendar() {
+  try {
+    const data = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+    const [y, m] = currentMonth.split("-").map(Number);
+    $("deskCalendarMonth").textContent = new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+    renderCalendarGrid("deskCalendarGrid", data.days, currentMonth);
+  } catch (e) {
+    $("deskCalendarGrid").innerHTML = '<p class="muted">Kalender belum dapat dimuat: ' + esc(e.friendly || e.message) + "</p>";
+  }
+}
 async function renderMonthly() {
   const data = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
   const [y, m] = currentMonth.split("-").map(Number);
@@ -954,27 +1045,7 @@ async function renderMonthly() {
   const head = $("monthPnlHead");
   head.textContent = (t.totalPnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(t.totalPnl));
   head.className = "num " + (t.totalPnl >= 0 ? "pos" : "neg");
-  // Kalender: offset hari pertama (Minggu = kolom 0), sel tint hijau/merah.
-  const today = new Date().toISOString().slice(0, 10);
-  const offset = new Date(y, m - 1, 1).getDay();
-  let cells = "";
-  for (let i = 0; i < offset; i++) cells += '<div class="cal-blank"></div>';
-  cells += data.days
-    .map(
-      (d) =>
-        '<div class="cal-day' +
-        (d.pnl > 0 ? " up"
-        : d.pnl < 0 ? " down"
-        : "") +
-        (d.date === today ? " today" : "") +
-        '"><span class="d">' +
-        d.day +
-        "</span>" +
-        (d.pnl !== 0 ? '<span class="pnl-val ' + (d.pnl > 0 ? "pos" : "neg") + '">' + (d.pnl > 0 ? "+" : "−") + fmtMoney(Math.abs(d.pnl)) + '</span><span class="cnt">' + d.positions + " posisi</span>" : "") +
-        "</div>",
-    )
-    .join("");
-  $("monthlyCalendar").innerHTML = cells;
+  renderCalendarGrid("monthlyCalendar", data.days, currentMonth);
   return data;
 }
 
@@ -2400,13 +2471,57 @@ function init() {
   );
   $("lpDistribution").addEventListener("change", updateDistBar);
   updateDistBar();
-  // Range book: filter kategori Open/Closed/Leftover.
+  // Desk LP: kategori, Networth/Calendar, pencarian, urutan, dan layout.
   document.querySelectorAll("#posFilterSeg [data-pfilter]").forEach((b) =>
     b.addEventListener("click", () => {
       posStatusFilter = b.dataset.pfilter;
       renderPositions();
     }),
   );
+  document.querySelectorAll("#deskModeSeg [data-dmode]").forEach((b) =>
+    b.addEventListener("click", () => {
+      deskMode = b.dataset.dmode;
+      renderPositions();
+    }),
+  );
+  document.querySelectorAll("#posLayoutSeg [data-layout]").forEach((b) =>
+    b.addEventListener("click", () => {
+      posLayout = b.dataset.layout;
+      renderPositions();
+    }),
+  );
+  $("posSearch").addEventListener("input", () => {
+    posSearchQuery = $("posSearch").value;
+    renderPositions();
+  });
+  $("posSort").addEventListener("change", () => {
+    posSortOrder = $("posSort").value;
+    renderPositions();
+  });
+  document.querySelectorAll("#balCurSeg [data-cur]").forEach((b) =>
+    b.addEventListener("click", () => {
+      balanceCurrency = b.dataset.cur;
+      renderBalances();
+    }),
+  );
+  $("rateIdr").value = balanceRates.idr || "";
+  $("rateEth").value = balanceRates.eth || "";
+  $("rateIdr").addEventListener("input", () => {
+    balanceRates.idr = Number($("rateIdr").value) || 0;
+    localStorage.setItem("rcslpv4-rate-idr", String(balanceRates.idr));
+    renderBalances();
+  });
+  $("rateEth").addEventListener("input", () => {
+    balanceRates.eth = Number($("rateEth").value) || 0;
+    localStorage.setItem("rcslpv4-rate-eth", String(balanceRates.eth));
+    renderBalances();
+  });
+  document.addEventListener("keydown", (event) => {
+    const active = document.activeElement;
+    if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || (active && /INPUT|TEXTAREA|SELECT/.test(active.tagName)) || document.querySelector(".modal:not([hidden])")) return;
+    event.preventDefault();
+    $("posSearch").focus();
+  });
   // Card Studio (di tab Monthly): tombol dashed memicu input file tersembunyi.
   $("bgPickImageBtn").addEventListener("click", () => $("bgImageInput").click());
   $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());

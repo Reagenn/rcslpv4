@@ -34,7 +34,7 @@
         <button class="tab active" data-tab="desk" type="button">Desk</button>
         <button class="tab" data-tab="copylp" type="button">Copy LP</button>
         <button class="tab" data-tab="monthly" type="button">Monthly Profit</button>
-        <button class="tab" data-tab="toplp" type="button">Top LP</button>
+        <button class="tab" data-tab="toplp" type="button">Trending</button>
       </nav>
 
       <!-- ============ TAB: DESK ============ -->
@@ -102,7 +102,17 @@
         <section class="panel" id="balancesPanel">
           <p class="eyebrow">SIMULATED BALANCES</p>
           <h2>Saldo per Chain</h2>
-          <p class="muted">Saldo USDC simulasi per chain + kepemilikan token dari buy/sell simulasi. State tersimpan persisten di backend (<code>backend/data/data.json</code>).</p>
+          <p class="muted">Saldo USDC simulasi per chain + kepemilikan token dari buy/sell simulasi. Konversi IDR dan ETH memakai kurs manual yang tersimpan di browser; bukan saldo wallet nyata.</p>
+          <div class="desk-toolbar">
+            <span class="muted">Total simulasi</span><strong id="balanceTotal" class="num">—</strong>
+            <div class="seg" id="balCurSeg">
+              <button type="button" data-cur="USD" class="active">USD</button>
+              <button type="button" data-cur="IDR">IDR</button>
+              <button type="button" data-cur="ETH">ETH</button>
+            </div>
+            <label class="rate-field">1 USD = <input id="rateIdr" type="number" min="0" step="any" placeholder="IDR" /> IDR</label>
+            <label class="rate-field">1 ETH = <input id="rateEth" type="number" min="0" step="any" placeholder="USD" /> USD</label>
+          </div>
           <div id="balanceGrid" class="balance-grid"></div>
           <div class="trade-box">
             <h3>Buy / Sell Simulasi</h3>
@@ -356,11 +366,32 @@
             <div class="seg" id="posFilterSeg">
               <button type="button" data-pfilter="open" class="active">Open <span id="posCountOpen" class="num">0</span></button>
               <button type="button" data-pfilter="closed">Closed <span id="posCountClosed" class="num">0</span></button>
+              <button type="button" data-pfilter="view">View <span id="posCountView" class="num">0</span></button>
               <button type="button" data-pfilter="leftover">Leftover <span id="posCountLeftover" class="num">0</span></button>
+            </div>
+          </div>
+          <div class="desk-toolbar">
+            <div class="seg" id="deskModeSeg">
+              <button type="button" data-dmode="networth" class="active">Networth</button>
+              <button type="button" data-dmode="calendar">Calendar</button>
+            </div>
+            <input id="posSearch" type="search" placeholder="Cari token, pair, atau chain ( / )" autocomplete="off" />
+            <select id="posSort" aria-label="Urutan posisi">
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+            </select>
+            <div class="seg" id="posLayoutSeg">
+              <button type="button" data-layout="cards" class="active">Kartu</button>
+              <button type="button" data-layout="table">Tabel</button>
             </div>
           </div>
           <p id="positionsCount" class="muted"></p>
           <div id="positionsList" class="positions"></div>
+          <div id="deskCalendar" class="desk-calendar" hidden>
+            <p class="muted" id="deskCalendarMonth"></p>
+            <div class="cal-week"><span>Min</span><span>Sen</span><span>Sel</span><span>Rab</span><span>Kam</span><span>Jum</span><span>Sab</span></div>
+            <div id="deskCalendarGrid" class="calendar"></div>
+          </div>
         </section>
       </section>
 
