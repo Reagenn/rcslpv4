@@ -118,8 +118,8 @@
           </div>
           <div class="pool-preflight">
             <p class="eyebrow">BASE SEPOLIA · UNISWAP V3 · READ ONLY</p>
-            <h3>Cek pool dan harga spot indikatif</h3>
-            <p class="muted">Cari pool dari factory resmi Uniswap V3 testnet. Ini bukan quote eksekusi atau simulasi mint LP; tidak ada transaksi yang dikirim.</p>
+            <h3>Cek pool dan quote swap indikatif</h3>
+            <p class="muted">Lookup pool memakai factory resmi dan quote swap exact-input memakai QuoterV2 Base Sepolia. Quote swap bukan quote mint LP; tidak ada transaksi yang dikirim.</p>
             <div class="two">
               <label>Token A (alamat kontrak ERC-20)
                 <input id="poolTokenA" spellcheck="false" placeholder="0x…" autocomplete="off" />
@@ -133,6 +133,16 @@
               <button id="poolCheckBtn" class="secondary" type="button">Periksa pool testnet</button>
             </div>
             <p id="poolCheckResult" class="muted" role="status" aria-live="polite">Hubungkan wallet dan pilih Base Sepolia untuk memeriksa pool.</p>
+            <div class="pool-quote-form">
+              <label>Arah quote
+                <select id="poolQuoteDirection"><option value="aToB">Token A → Token B</option><option value="bToA">Token B → Token A</option></select>
+              </label>
+              <label>Jumlah input
+                <input id="poolQuoteAmount" type="text" inputmode="decimal" placeholder="Contoh: 1.25" autocomplete="off" />
+              </label>
+              <button id="poolQuoteBtn" class="secondary" type="button" disabled>Quote swap testnet</button>
+            </div>
+            <p id="poolQuoteResult" class="muted" role="status" aria-live="polite">Periksa pool terlebih dahulu untuk mengaktifkan quote.</p>
           </div>
         </section>
 

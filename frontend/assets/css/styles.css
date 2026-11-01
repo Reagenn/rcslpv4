@@ -1903,11 +1903,33 @@ input[type="range"] {
 .pool-preflight-actions label {
   min-width: 150px;
 }
-#poolCheckResult {
+.pool-quote-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+}
+.pool-quote-form label {
+  min-width: 0;
+}
+.pool-quote-form input,
+.pool-quote-form select {
+  width: 100%;
+  margin-top: 6px;
+  background: #0d0d10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: var(--text);
+}
+#poolCheckResult,
+#poolQuoteResult {
   overflow-wrap: anywhere;
   white-space: pre-line;
 }
-#poolCheckResult.error {
+#poolCheckResult.error,
+#poolQuoteResult.error {
   color: var(--danger);
 }
 .wallet-readout span {
@@ -2431,6 +2453,9 @@ label.check input {
   .desk-toolbar .seg {
     max-width: 100%;
     overflow-x: auto;
+  }
+  .pool-quote-form {
+    grid-template-columns: 1fr;
   }
   #posFilterSeg button,
   #deskModeSeg button,
