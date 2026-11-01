@@ -1,0 +1,2637 @@
+"use strict";
+/* LP Desk local frontend v4 — simulation only. No real wallet, no real funds.
+ * SATU font stack dipakai UI (CSS) dan canvas Card Studio (FONT_STACK di sini). */
+const $ = (id) => document.getElementById(id);
+const FONT_STACK = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif';
+const CHAINS = ["SOL", "BASE", "ROBINHOOD", "BSC", "HYPEREVM", "ARC", "ETH"];
+const STABLE_QUOTES = ["USDC", "USDT", "USD", "SOL", "WSOL", "ETH", "WETH"];
+
+let deskState = null;
+let selectedToken = null;
+let lpLastResults = [];
+let candidatesData = null;
+let ddContext = null;
+let currentMonth = new Date().toISOString().slice(0, 7);
+let cardBg = { type: null, img: null, video: null, name: "", objectUrl: "" };
+let cardMonthlyCache = null;
+let videoPreviewRaf = null;
+let settings = JSON.parse(JSON.stringify(defaultSettings()));
+let rtPaused = false;
+let rtTimer = null;
+let rtCountdownTimer = null;
+let rtSecondsLeft = 5;
+let discoverState = { tab: "trending", tf: "h24", hideRisky: false, chain: "ALL", expanded: null };
+let copyDiscovery = null;
+let copySelectedPool = null;
+let copyTokenChange24h = 0;
+/* UI baru mengikuti hosted: filter chain bar + filter Range book, kontrol
+   segmented Open LP, dan cache payload realtime terakhir (untuk strip
+   statistik + sidebar Monthly). */
+let chainFilter = "ALL";
+let posStatusFilter = "open";
+let lpSideVal = "Both";
+let lpStrategyVal = "Spot";
+let lpPreset = "wide";
+let rtData = null;
+const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
+const CHAIN_COLORS = { SOL: "#14f195", BASE: "#5b8cff", ROBINHOOD: "#00c805", BSC: "#f0b90b", HYPEREVM: "#a7f3ea", ARC: "#7d9bff", ETH: "#8a9cf5" };
+
+function defaultSettings() {
+  // Disamakan dengan default hosted: Nara 70/250/3/wide/consider,
+  // Byte TP +22% / SL 28%, Kopi 250/3/wide.
+  return {
+    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500 },
+    tpSl: { armed: false, defaultTpPct: 22, defaultSlPct: 28 },
+    copyTrading: { enabled: false, leaderId: null, amountPerCopy: 250, maxPositions: 3, rangePreset: "wide", dailyLossLimit: 150 },
+  };
+}
+function fmtCount(n) {
+  if (n == null || !isFinite(Number(n))) return "—";
+  const v = Number(n);
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return String(Math.round(v));
+}
+
+function fmtMoney(n) {
+  const v = Number(n) || 0;
+  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtCompact(n) {
+  const v = Number(n) || 0;
+  if (Math.abs(v) >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+  if (Math.abs(v) >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+  if (Math.abs(v) >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+  return "$" + v.toFixed(2);
+}
+function fmtPct(n, digits) {
+  if (n == null || !isFinite(Number(n))) return "—";
+  const v = Number(n);
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + "B%";
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M%";
+  if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1) + "K%";
+  return v.toFixed(digits != null ? digits : 2) + "%";
+}
+function fmtPrice(p) {
+  const v = Number(p) || 0;
+  if (v === 0) return "0";
+  if (v >= 1) return v.toFixed(4);
+  if (v >= 0.01) return v.toFixed(6);
+  return v.toPrecision(3);
+}
+function fmtAge(ts) {
+  if (!ts) return "—";
+  const diff = Date.now() - Number(ts);
+  const days = Math.floor(diff / 86400000);
+  if (days >= 1) return days + "d";
+  const hours = Math.floor(diff / 3600000);
+  if (hours >= 1) return hours + "h";
+  const mins = Math.floor(diff / 60000);
+  return Math.max(1, mins) + "m";
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function showToast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast" + (isErr ? " err" : "");
+  t.hidden = false;
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => {
+    t.hidden = true;
+  }, 6000);
+}
+async function api(pathname, options) {
+  const res = await fetch(pathname, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || "HTTP " + res.status);
+    err.friendly = data.error || "Terjadi kesalahan. Coba lagi nanti.";
+    throw err;
+  }
+  return data;
+}
+function postJson(pathname, body) {
+  return api(pathname, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+}
+function setMsg(id, text, isErr) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = isErr ? "var(--danger)" : "";
+}
+
+/* ---------------- State loading + renderers ---------------- */
+
+async function loadState() {
+  deskState = await api("/api/state");
+  if (deskState.settings) settings = deskState.settings;
+  renderChainBar();
+  renderBalances();
+  renderTransactions();
+  renderPositions();
+  renderHolding();
+  renderCrew();
+  renderTpSlStrip();
+  renderAgentActivity();
+  return deskState;
+}
+
+function renderBalances() {
+  if (!deskState) return;
+  const grid = $("balanceGrid");
+  grid.innerHTML = CHAINS.map((c) => {
+    const b = (deskState.balances && deskState.balances[c]) || { usdc: 0, tokens: {} };
+    const toks = Object.entries(b.tokens || {}).filter(([, t]) => (t.qty || 0) > 0.000001);
+    return (
+      '<div class="balance-card"><span class="chain-badge">' +
+      c +
+      "</span><strong>" +
+      fmtMoney(b.usdc) +
+      "</strong>" +
+      (toks.length ? toks.map(([addr, t]) => '<span class="tok">' + esc(t.symbol) + ": " + Number(t.qty).toFixed(4) + "</span>").join("<br>") : '<span class="tok">Tidak ada token</span>') +
+      "</div>"
+    );
+  }).join("");
+}
+
+function renderTransactions() {
+  if (!deskState) return;
+  const list = $("txList");
+  const txs = deskState.transactions || [];
+  if (!txs.length) {
+    list.innerHTML = '<p class="muted">Belum ada transaksi simulasi.</p>';
+    return;
+  }
+  list.innerHTML = txs
+    .slice(0, 30)
+    .map(
+      (t) =>
+        '<div class="tx-row"><span><strong>' +
+        esc(t.side.toUpperCase()) +
+        "</strong> " +
+        esc(t.symbol) +
+        ' <span class="chain-badge">' +
+        esc(t.chain) +
+        "</span></span>" +
+        "<span>" +
+        fmtMoney(t.amount) +
+        " @ " +
+        fmtPrice(t.price) +
+        '</span><span class="muted">' +
+        new Date(t.at).toLocaleString("id-ID") +
+        "</span></div>",
+    )
+    .join("");
+}
+
+async function doTrade(side) {
+  const chain = $("tradeChain").value;
+  const address = $("tradeAddress").value.trim();
+  const symbol = $("tradeSymbol").value.trim() || "TOKEN";
+  const amount = Number($("tradeAmount").value) || 0;
+  const price = Number($("tradePrice").value) || 0;
+  if (!address) {
+    setMsg("tradeMsg", "Isi alamat token dulu.", true);
+    return;
+  }
+  if (!(amount > 0) || !(price > 0)) {
+    setMsg("tradeMsg", "Nominal dan harga harus lebih dari 0.", true);
+    return;
+  }
+  try {
+    await postJson("/api/trade", { chain, side, address, symbol, amount, price });
+    setMsg("tradeMsg", (side === "buy" ? "Buy" : "Sell") + " simulasi " + symbol + " sebesar " + fmtMoney(amount) + " berhasil di " + chain + ".");
+    await loadState();
+  } catch (e) {
+    setMsg("tradeMsg", e.friendly || e.message, true);
+  }
+}
+
+/* Kategori Range book: open apa adanya; posisi closed yang digantikan
+   rebalance (replacedBy terisi / closeReason 'rebalance') masuk Leftover —
+   sisa rantai rebalance; closed lain masuk Closed. */
+function posCategory(p) {
+  if (p.status === "open") return "open";
+  if (p.replacedBy || p.closeReason === "rebalance") return "leftover";
+  return "closed";
+}
+function renderChainBar() {
+  const bar = $("chainBar");
+  if (!bar || !deskState) return;
+  const opens = (deskState.positions || []).filter((p) => p.status === "open");
+  const countFor = (c) => (c === "ALL" ? opens.length : opens.filter((p) => p.chain === c).length);
+  const cell = (key, label, avatarHtml) =>
+    '<button type="button" class="chain-cell' +
+    (chainFilter === key ? " active" : "") +
+    '" data-chainfilter="' +
+    key +
+    '">' +
+    avatarHtml +
+    '<span class="chain-meta"><span class="chain-name">' +
+    label +
+    "</span>" +
+    '<span class="chain-open">' +
+    countFor(key) +
+    " open</span></span></button>";
+  bar.innerHTML =
+    cell("ALL", "All networks", '<span class="chain-avatar all">' + CHAINS.length + "</span>") +
+    CHAINS.map((c) => cell(c, c, '<span class="chain-avatar" style="background:' + (CHAIN_COLORS[c] || "#888") + '">' + c.charAt(0) + "</span>")).join("");
+  bar.querySelectorAll("[data-chainfilter]").forEach((b) =>
+    b.addEventListener("click", () => {
+      chainFilter = b.dataset.chainfilter;
+      renderChainBar();
+      renderPositions();
+    }),
+  );
+}
+function renderTpSlStrip() {
+  const stateEl = $("stripTpSlState");
+  if (!stateEl) return;
+  const armed = !!(settings && settings.tpSl && settings.tpSl.armed);
+  stateEl.textContent = armed ? "ARMED" : "PAUSED";
+  const tog = $("stripTpSlToggle");
+  if (tog) tog.checked = armed;
+}
+
+function renderPositions() {
+  if (!deskState) return;
+  const list = $("positionsList");
+  const positions = deskState.positions || [];
+  // Filter Range book: kategori (Open/Closed/Leftover) + filter chain bar.
+  const counts = { open: 0, closed: 0, leftover: 0 };
+  for (const p of positions) counts[posCategory(p)]++;
+  $("posCountOpen").textContent = counts.open;
+  $("posCountClosed").textContent = counts.closed;
+  $("posCountLeftover").textContent = counts.leftover;
+  document.querySelectorAll("#posFilterSeg [data-pfilter]").forEach((b) => b.classList.toggle("active", b.dataset.pfilter === posStatusFilter));
+  const shown = positions.filter((p) => posCategory(p) === posStatusFilter && (chainFilter === "ALL" || p.chain === chainFilter));
+  $("positionsCount").textContent = "Menampilkan " + shown.length + " dari " + positions.length + " posisi · filter chain: " + (chainFilter === "ALL" ? "All networks" : chainFilter);
+  if (!positions.length) {
+    list.innerHTML = '<p class="muted">Belum ada posisi. Buka posisi pertama lewat terminal Open LP atau Copy LP.</p>';
+    renderHolding();
+    return;
+  }
+  if (!shown.length) {
+    list.innerHTML = '<p class="muted">Tidak ada posisi pada filter ini.</p>';
+    renderHolding();
+    return;
+  }
+  list.innerHTML = shown
+    .map((p) => {
+      const live = p.status === "open";
+      const fees = (Number(p.fees) || 0) + (Number(p.rewards) || 0);
+      const upnl =
+        live ? round2Client(p.value + fees - p.amount)
+        : p.closePnl != null ? p.closePnl
+        : 0;
+      const movePct = p.entryPrice > 0 ? round2Client((p.currentPrice / p.entryPrice - 1) * 100) : 0;
+      const isDlmm = p.product === "DLMM" && p.lowerBin != null && p.upperBin != null;
+      const productLabel = p.product === "DLMM" ? "METEORA DLMM" : "SIM RANGE";
+      const pill =
+        live ?
+          '<span class="status-pill ' + (p.inRange ? "in" : "out") + '">' + (p.inRange ? "IN RANGE" : "OUT OF RANGE") + "</span>"
+        : '<span class="status-pill ' + posCategory(p) + '">' + (posCategory(p) === "leftover" ? "LEFTOVER" : "CLOSED") + "</span>";
+      // Bar range: DLMM memakai posisi active bin relatif terhadap fixed bins;
+      // generik memakai posisi harga live di antara min–max price.
+      let rangeBlock = "";
+      if (isDlmm) {
+        const span = Math.max(1, p.upperBin - p.lowerBin);
+        const rel = Math.max(0, Math.min(100, (((p.activeBin != null ? p.activeBin : p.lowerBin) - p.lowerBin) / span) * 100));
+        rangeBlock =
+          '<div class="range-block"><div class="range-labels"><span>FIXED ' +
+          p.lowerBin +
+          '</span><span class="mid">ACTIVE ' +
+          (p.activeBin != null ? p.activeBin : "—") +
+          "</span><span>FIXED " +
+          p.upperBin +
+          "</span></div>" +
+          '<div class="range-bar"><span class="range-marker" style="left:' +
+          rel +
+          '%"></span></div></div>';
+      } else {
+        const spanP = (Number(p.maxPrice) || 0) - (Number(p.minPrice) || 0);
+        const relP = spanP > 0 ? Math.max(0, Math.min(100, (((Number(p.currentPrice) || 0) - (Number(p.minPrice) || 0)) / spanP) * 100)) : 0;
+        rangeBlock =
+          '<div class="range-block"><div class="range-labels"><span>MIN ' +
+          (p.minPct != null ? p.minPct + "%" : fmtPrice(p.minPrice)) +
+          '</span><span class="mid">HARGA LIVE</span><span>MAX ' +
+          (p.maxPct != null ? "+" + p.maxPct + "%" : fmtPrice(p.maxPrice)) +
+          "</span></div>" +
+          '<div class="range-bar"><span class="range-marker" style="left:' +
+          relP +
+          '%"></span></div></div>';
+      }
+      const slTpTxt = "SL " + (p.slPct != null ? (p.slPct > 0 ? "+" : "") + p.slPct + "%" : "—") + " · TP " + (p.tpPct != null ? "+" + p.tpPct + "%" : "—");
+      const metaBits = [
+        "Nominal " + fmtMoney(p.amount),
+        p.pair ? "Pair " + esc(p.pair) : "",
+        "Side " + esc(p.side || "—") + " · Quote " + esc(p.quote || "USDC"),
+        p.createdAt ? "Dibuka " + new Date(p.createdAt).toLocaleString("id-ID") : "",
+        p.poolAddress ? "Pool " + esc(String(p.poolAddress).slice(0, 10)) + "…" : "",
+        p.replaces ? "Menggantikan posisi sebelumnya (rebalance)" : "",
+        p.replacedBy ? "Digantikan oleh posisi rebalance" : "",
+        !live && p.closePnl != null ? "PnL tutup " + fmtMoney(p.closePnl) : "",
+        !live && p.closedAt ? "Ditutup " + new Date(p.closedAt).toLocaleString("id-ID") : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return (
+        '<article class="position-card" data-pos="' +
+        p.id +
+        '">' +
+        '<div class="pos-head">' +
+        '<span class="pos-avatar">' +
+        esc((p.symbol || "?").charAt(0)) +
+        "</span>" +
+        '<div class="pos-title"><h4>' +
+        esc(p.symbol) +
+        " / " +
+        esc(p.quote || "USDC") +
+        (p.source && p.source !== "Open LP" ? '<span class="src-label">' + esc(p.source) + "</span>" : "") +
+        "</h4>" +
+        '<div class="pos-sub">CHAIN ' +
+        esc(p.chain) +
+        " · " +
+        productLabel +
+        " · " +
+        esc(p.strategy || "Spot") +
+        (p.product === "DLMM" ? " · " + p.binStepBps + " BPS" : "") +
+        "</div></div>" +
+        pill +
+        "</div>" +
+        '<div class="live-strip"><span class="live-dot"></span><span class="lp-label">HARGA LIVE</span>' +
+        '<span class="lp-price">' +
+        fmtPrice(p.currentPrice) +
+        "</span>" +
+        '<span class="lp-entry">Entry ' +
+        fmtPrice(p.entryPrice) +
+        ' <span class="' +
+        (movePct >= 0 ? "pos" : "neg") +
+        '">' +
+        (movePct >= 0 ? "▲ +" : "▼ ") +
+        movePct +
+        "%</span></span>" +
+        '<span class="lp-src">DEX Screener · realtime</span></div>' +
+        '<div class="pos-stats">' +
+        "<div><span>LP POSITION VALUE</span><strong>" +
+        fmtMoney(p.value) +
+        "</strong></div>" +
+        "<div><span>HOLD BENCHMARK</span><strong>" +
+        fmtMoney(p.holdValue) +
+        "</strong></div>" +
+        '<div><span>NET PNL VS HOLDING</span><strong class="' +
+        (p.netVsHolding >= 0 ? "pos" : "neg") +
+        '">' +
+        fmtMoney(p.netVsHolding) +
+        "</strong></div>" +
+        '<div><span>IL / DIVERGENCE</span><strong class="' +
+        (p.il < 0 ? "neg" : "") +
+        '">' +
+        fmtMoney(p.il) +
+        " (" +
+        p.ilPct +
+        "%)</strong></div>" +
+        "</div>" +
+        rangeBlock +
+        '<div class="fee-row">' +
+        "<div><span>UNCLAIMED FEES</span><strong>" +
+        fmtMoney(p.fees) +
+        "</strong></div>" +
+        "<div><span>CLAIMED FEES</span><strong>" +
+        fmtMoney(p.claimed) +
+        "</strong></div>" +
+        "<div><span>LM REWARDS</span><strong>" +
+        fmtMoney(p.rewards) +
+        "</strong></div>" +
+        "</div>" +
+        (isDlmm ? '<p class="dlmm-note">Bin ' + p.lowerBin + "–" + p.upperBin + " tetap untuk umur posisi ini. Rebalance menutup posisi lama dan membuat posisi pengganti; fee tidak auto-compound.</p>" : "") +
+        '<p class="pos-meta">' +
+        metaBits +
+        (live ? "" : ' · uPnL/PnL: <span class="' + (upnl >= 0 ? "pos" : "neg") + '">' + fmtMoney(upnl) + "</span>") +
+        "</p>" +
+        '<div class="pos-foot"><span class="pos-sltp">' +
+        slTpTxt +
+        "</span>" +
+        '<div class="pos-actions">' +
+        (live ?
+          '<button type="button" class="text-btn" data-act="claim" data-id="' +
+          p.id +
+          '">Claim</button>' +
+          '<button type="button" class="text-btn" data-act="rebalance" data-id="' +
+          p.id +
+          '">Rebalance</button>' +
+          '<button type="button" class="text-btn" data-act="close" data-id="' +
+          p.id +
+          '">Close</button>'
+        : "") +
+        '<button type="button" class="text-btn danger" data-act="askdelete" data-id="' +
+        p.id +
+        '">Hapus</button>' +
+        '</div></div><div class="delete-slot"></div>' +
+        "</article>"
+      );
+    })
+    .join("");
+  list.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.addEventListener("click", () => handlePositionAction(btn.dataset.act, btn.dataset.id, btn));
+  });
+  renderHolding();
+}
+function round2Client(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+async function handlePositionAction(act, id, btn) {
+  const card = btn.closest(".position-card");
+  if (act === "askdelete") {
+    const slot = card.querySelector(".delete-slot");
+    slot.innerHTML =
+      '<div class="delete-confirm">Hapus posisi ini <strong>permanen</strong>? Baris ledger PnL dan log aktivitas terkait ikut dihapus agar Monthly Profit konsisten.' +
+      '<div class="actions"><button type="button" class="danger" data-del="yes">Ya, hapus permanen</button><button type="button" class="secondary" data-del="no">Batal</button></div></div>';
+    slot.querySelector('[data-del="yes"]').addEventListener("click", async () => {
+      try {
+        const r = await postJson("/api/lp/delete", { id });
+        showToast("Posisi " + (r.pair || "") + " dihapus (" + r.removedLedgerRows + " baris ledger dibersihkan).");
+        await loadState();
+      } catch (e) {
+        showToast(e.friendly || e.message, true);
+      }
+    });
+    slot.querySelector('[data-del="no"]').addEventListener("click", () => {
+      slot.innerHTML = "";
+    });
+    return;
+  }
+  try {
+    if (act === "claim") {
+      const r = await postJson("/api/lp/claim", { id });
+      showToast("Fee ter-claim: " + fmtMoney(r.claimed));
+    } else if (act === "close") {
+      await postJson("/api/lp/close", { id });
+      showToast("Posisi ditutup.");
+    } else if (act === "rebalance") {
+      const p = (deskState.positions || []).find((x) => x.id === id);
+      if (!p) return;
+      const span = Math.max((Number(p.maxPrice) || 0) - (Number(p.minPrice) || 0), Number(p.currentPrice) * 0.05);
+      const r = await postJson("/api/lp/rebalance", { id, minPrice: Math.max(0, p.currentPrice - span / 2), maxPrice: p.currentPrice + span / 2 });
+      showToast("Rebalance selesai — pengganti didanai dari nilai settled " + fmtMoney(r.settledValue) + ".");
+    }
+    await loadState();
+  } catch (e) {
+    showToast(e.friendly || e.message, true);
+  }
+}
+
+function renderHolding() {
+  if (!deskState) return;
+  const opens = (deskState.positions || []).filter((p) => p.status === "open");
+  const sum = (fn) => round2Client(opens.reduce((s, p) => s + (Number(fn(p)) || 0), 0));
+  const netVsHolding = sum((p) => p.netVsHolding);
+  const il = sum((p) => p.il);
+  const fees = sum((p) => (Number(p.fees) || 0) + (Number(p.rewards) || 0));
+  $("holdingSummary").innerHTML =
+    "<div><span>Posisi terbuka</span><strong>" +
+    opens.length +
+    "</strong></div>" +
+    '<div><span>Desk Net PnL vs Holding (open)</span><strong class="' +
+    (netVsHolding >= 0 ? "pos" : "neg") +
+    '">' +
+    fmtMoney(netVsHolding) +
+    "</strong></div>" +
+    '<div><span>Total impermanent loss</span><strong class="' +
+    (il < 0 ? "neg" : "") +
+    '">' +
+    fmtMoney(il) +
+    "</strong></div>" +
+    "<div><span>Fee + reward belum diklaim</span><strong>" +
+    fmtMoney(fees) +
+    "</strong></div>";
+  // Strip statistik kolom (a): nilai besar + persen vs total hold benchmark.
+  const stripEl = $("stripNetPnl");
+  if (stripEl) {
+    const holdSum = sum((p) => p.holdValue);
+    const pct = holdSum > 0 ? round2Client((netVsHolding / holdSum) * 100) : 0;
+    stripEl.textContent = fmtMoney(netVsHolding);
+    stripEl.className = "num " + (netVsHolding >= 0 ? "pos" : "neg");
+    const pctEl = $("stripNetPnlPct");
+    pctEl.textContent = (pct >= 0 ? "+" : "") + pct.toFixed(2) + "% vs holding";
+    pctEl.className = "strip-pct " + (pct >= 0 ? "pos" : "neg");
+  }
+  const firstDlmm = opens.find((p) => p.product === "DLMM") || opens[0];
+  const bp = $("binsPreview");
+  if (firstDlmm && firstDlmm.bins && firstDlmm.bins.length) {
+    bp.innerHTML =
+      firstDlmm.bins
+        .map((b, i) => {
+          const h = 18 + Math.round(46 * Math.exp(-Math.pow(i - firstDlmm.activeBinIndex, 2) / 18));
+          return '<div class="bin' + (i === firstDlmm.activeBinIndex ? " active" : "") + '" style="height:' + h + 'px" title="Bin ' + b.index + " · " + fmtPrice(b.price) + '"></div>';
+        })
+        .join("") + "";
+    bp.insertAdjacentHTML("beforeend", "");
+    bp.title = "Price bins " + firstDlmm.symbol + " (bin oranye = active bin)";
+  } else {
+    bp.innerHTML = '<p class="muted">Buka posisi DLMM (Solana) untuk melihat price bins.</p>';
+  }
+}
+
+/* ---------------- Agent Crew ---------------- */
+
+function agentRunning(name) {
+  if (!settings) return false;
+  if (name === "nara") return !!settings.autoTrading.enabled;
+  if (name === "byte") return !!settings.tpSl.armed;
+  if (name === "kopi") return !!settings.copyTrading.enabled;
+  return true; // sora selalu BERJALAN (analis on-demand)
+}
+function renderCrew() {
+  const statusText = {
+    nara: (r) => (r ? "AKTIF · AUTO" : "NONAKTIF"),
+    byte: (r) => (r ? "ARMED" : "PAUSED"),
+    sora: () => "SIAP ANALISIS",
+    kopi: (r) => (r ? "AKTIF" : "NONAKTIF"),
+  };
+  for (const name of ["nara", "byte", "sora", "kopi"]) {
+    const running = agentRunning(name);
+    const badge = $("badge-" + name);
+    const dot = $("dot-" + name);
+    const char = $("char-" + name);
+    if (badge) {
+      badge.textContent = running ? "BERJALAN" : "BERHENTI";
+      badge.className = "crew-badge " + (running ? "running" : "stopped");
+    }
+    if (dot) dot.className = "status-dot" + (running ? " running" : "");
+    if (char && char.parentElement) char.parentElement.classList.toggle("dim", !running);
+    const statusEl = $("crewStatus-" + name);
+    if (statusEl) statusEl.textContent = statusText[name](running);
+    const chip = $("chip-" + name);
+    if (chip) chip.classList.toggle("on", running);
+  }
+  renderTpSlStrip();
+}
+function renderAgentActivity() {
+  const box = $("agentActivity");
+  const logs = (deskState && deskState.agentLogs) || [];
+  if (!logs.length) {
+    box.innerHTML = '<p class="muted">Belum ada aktivitas agent.</p>';
+    return;
+  }
+  box.innerHTML = logs
+    .slice(0, 12)
+    .map(
+      (l) =>
+        '<div class="log-row"><span class="who">' +
+        esc(l.agent) +
+        '</span><span class="msg">' +
+        esc(l.message) +
+        '</span><span class="when">' +
+        new Date(l.at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) +
+        "</span></div>",
+    )
+    .join("");
+}
+function renderAgentLogs(elId, agentName) {
+  const el = $(elId);
+  if (!el) return;
+  const logs = ((deskState && deskState.agentLogs) || []).filter((l) => l.agent === agentName);
+  el.innerHTML = logs.length ? logs.map((l) => '<div class="log-row"><span class="when">' + new Date(l.at).toLocaleString("id-ID") + "</span>" + esc(l.message) + "</div>").join("") : '<p class="muted">Belum ada log untuk agen ini.</p>';
+}
+
+/* ---------------- Realtime (tetap 5 detik, tanpa animasi) ---------------- */
+
+async function refreshRealtime() {
+  try {
+    const data = await api("/api/realtime");
+    rtData = data;
+    const timeStr = new Date(data.lastUpdated).toLocaleTimeString("id-ID");
+    $("rtValue").textContent = fmtMoney(data.portfolioValue);
+    const pnlPctTotal = round2Client((data.totalPnl / 5000) * 100);
+    $("rtPnl").textContent = (data.totalPnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(data.totalPnl)) + " (" + (pnlPctTotal >= 0 ? "+" : "") + pnlPctTotal.toFixed(2) + "%)";
+    $("rtPnl").className = data.totalPnl >= 0 ? "pos" : "neg";
+    $("stripUpdated").textContent = timeStr;
+    $("rtAllocated").textContent = fmtMoney(data.allocatedCapital);
+    $("rtFreeCapital").textContent = fmtMoney(data.freeCapital);
+    $("rtClaimable").textContent = fmtMoney(data.claimableFees);
+    $("rtUpdated").textContent = timeStr;
+    // Ticker gaya hosted: "SIMBOL / PAIR $harga ±persen%" (persen vs entry,
+    // dari field entryPrice + pnlPct payload /api/realtime).
+    $("rtTicker").innerHTML =
+      (data.positions || [])
+        .map(
+          (p) => '<span class="tick">' + esc(p.pair || p.symbol) + " " + fmtPrice(p.livePrice) + ' <span class="' + (p.pnlPct >= 0 ? "pos" : "neg") + '">' + (p.pnlPct >= 0 ? "+" : "") + Number(p.pnlPct || 0).toFixed(2) + "%</span></span>",
+        )
+        .join("") || '<span class="muted">Tidak ada posisi terbuka.</span>';
+    if (data.closedByTpSl && data.closedByTpSl.length) {
+      $("rtClosed").textContent = "Auto TP/SL menutup: " + data.closedByTpSl.map((c) => c.symbol + " (" + c.reason + ")").join(", ");
+      await loadState();
+    }
+    rtSecondsLeft = 5;
+  } catch (e) {
+    setMsg("rtMsg", "Realtime gagal dimuat: " + (e.friendly || e.message), true);
+  }
+}
+function startRealtime() {
+  stopRealtime();
+  rtSecondsLeft = 5;
+  rtTimer = setInterval(() => {
+    if (!rtPaused) liveTick(false);
+  }, 5000);
+  rtCountdownTimer = setInterval(() => {
+    const el = $("rtStatus");
+    if (!el) return;
+    if (rtPaused) {
+      el.textContent = "Jeda";
+      return;
+    }
+    if (liveTickBusy) {
+      el.textContent = "Mengambil harga…";
+      return;
+    }
+    rtSecondsLeft = Math.max(0, rtSecondsLeft - 1);
+    el.textContent = rtSecondsLeft + " dtk";
+  }, 1000);
+}
+function stopRealtime() {
+  if (rtTimer) clearInterval(rtTimer);
+  if (rtCountdownTimer) clearInterval(rtCountdownTimer);
+  rtTimer = null;
+  rtCountdownTimer = null;
+}
+
+/* ---------------- Realtime SEMUA fitur (tetap 5 detik, tanpa animasi) ----------------
+   Satu siklus 5 detik yang sama memperbarui: panel Portfolio Realtime,
+   lalu tab yang sedang aktif (Desk: state penuh; Monthly Profit: sidebar +
+   kalender + preview Card Studio yang kini menyatu di tab Monthly; Top LP:
+   kandidat dari cache server — scan sumber maks. tiap 5 menit agar tidak
+   kena batas API publik; Copy LP: posisi pool terpilih + monitor bila
+   sudah pernah dijalankan). Refresh tab dilewati sesaat bila akan
+   mengganggu: modal terbuka, pengguna sedang mengetik/memilih di form,
+   konfirmasi hapus posisi sedang tampil, atau baris detail Discover
+   sedang terbuka. */
+
+let liveTickBusy = false;
+let copyMonitorStarted = false;
+let cardRecording = false;
+
+function liveGuardBlocked() {
+  if (document.querySelector(".modal:not([hidden])")) return true;
+  const a = document.activeElement;
+  if (a && (a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA")) return true;
+  if (document.querySelector(".delete-confirm")) return true;
+  if (document.querySelector(".disc-detail")) return true;
+  return false;
+}
+function activeTabName() {
+  const p = document.querySelector(".tab-panel.active");
+  return p ? p.id.replace("tab-", "") : "desk";
+}
+async function liveTick(manual) {
+  if (!manual && rtPaused) return;
+  if (liveTickBusy) return;
+  liveTickBusy = true;
+  const nowBtn = $("rtNowBtn");
+  if (nowBtn) {
+    nowBtn.disabled = true;
+    nowBtn.textContent = "Memperbarui…";
+  }
+  try {
+    await refreshRealtime();
+    if (!liveGuardBlocked()) {
+      const tab = activeTabName();
+      if (tab === "desk") await loadState();
+      else if (tab === "monthly") {
+        await renderMonthly();
+        if (!cardRecording) await renderCardPreview();
+      } else if (tab === "toplp") await loadCandidates(false);
+      else if (tab === "copylp") {
+        if (copySelectedPool) await loadPoolPositions();
+        if (copyMonitorStarted) await runCopyMonitor(true);
+      }
+    }
+  } catch (_) {
+    /* tiap fungsi menangani errornya sendiri */
+  } finally {
+    liveTickBusy = false;
+    if (nowBtn) {
+      nowBtn.disabled = false;
+      nowBtn.textContent = "Perbarui sekarang";
+    }
+  }
+}
+
+/* ---------------- Open LP terminal ---------------- */
+
+function chainFromDexId(chainId) {
+  const map = { solana: "SOL", base: "BASE", bsc: "BSC", ethereum: "ETH", robinhood: "ROBINHOOD", hyperevm: "HYPEREVM", arc: "ARC" };
+  return map[String(chainId || "").toLowerCase()] || null;
+}
+function tokenFromPair(pair) {
+  const chain = chainFromDexId(pair.chainId);
+  const base = pair.baseToken || {};
+  const quote = pair.quoteToken || {};
+  if (STABLE_QUOTES.includes((quote.symbol || "").toUpperCase()) || !STABLE_QUOTES.includes((base.symbol || "").toUpperCase())) {
+    return { address: base.address, symbol: base.symbol, name: base.name, pairSymbol: quote.symbol };
+  }
+  return { address: quote.address, symbol: quote.symbol, name: quote.name, pairSymbol: base.symbol };
+}
+function selectToken(pair, chainLabel) {
+  const t = tokenFromPair(pair);
+  selectedToken = {
+    address: t.address,
+    symbol: t.symbol,
+    name: t.name,
+    chain: chainLabel,
+    price: Number(pair.priceUsd) || 0,
+    pair: (pair.baseToken?.symbol || "?") + "/" + (pair.quoteToken?.symbol || "?"),
+    pairUrl: pair.url || "",
+  };
+  $("lpSelectedInfo").textContent = "Dipilih: " + selectedToken.symbol + " (" + chainLabel + ") @ " + fmtPrice(selectedToken.price);
+  $("lpPairInfo").textContent = selectedToken.pair + " · " + fmtPrice(selectedToken.price);
+  const selChain = $("lpChain");
+  if (selChain.value === "AUTO" || CHAINS.includes(chainLabel)) selChain.value = chainLabel === "AUTO" ? "AUTO" : chainLabel;
+  applyLpPreset(lpPreset);
+}
+/* Preset range gaya hosted: Tight −5/+5, Wide −20/+20 mengisi Min %/Max %;
+   Custom = nilai manual pengguna (tidak ditimpa). */
+function applyLpPreset(name) {
+  lpPreset = name;
+  document.querySelectorAll("#lpPresetSeg [data-preset]").forEach((b) => b.classList.toggle("active", b.dataset.preset === name));
+  const pr = LP_PRESETS[name];
+  if (pr) {
+    $("lpMinPct").value = pr[0];
+    $("lpMaxPct").value = pr[1];
+  }
+}
+/* Bar distribusi visual: nilai select berbentuk "token/quote" (kontrak API
+   server); label + bar ditampilkan QUOTE dulu seperti hosted. */
+function updateDistBar() {
+  const parts = String($("lpDistribution").value || "50/50")
+    .split("/")
+    .map(Number);
+  const tok = parts[0] || 0;
+  const quo = parts[1] || 0;
+  $("distBarQuote").style.width = quo + "%";
+  $("distBarToken").style.width = tok + "%";
+  $("distLabel").textContent = quo + "% QUOTE · " + tok + "% TOKEN";
+}
+function renderSearchResults(pairs, sourceLabel) {
+  const box = $("lpSearchResults");
+  lpLastResults = pairs || [];
+  if (!lpLastResults.length) {
+    box.innerHTML = '<p class="muted">Tidak ada hasil.</p>';
+    return;
+  }
+  box.innerHTML =
+    lpLastResults
+      .map((pair, i) => {
+        const chain = chainFromDexId(pair.chainId);
+        const t = tokenFromPair(pair);
+        const label = chain || "TIDAK DIDUKUNG (" + esc(pair.chainId || "?") + ")";
+        return (
+          '<button type="button" class="token-result" data-idx="' +
+          i +
+          '">' +
+          "<span><strong>" +
+          esc(t.symbol || "?") +
+          "</strong> — " +
+          esc(t.name || "") +
+          "<small>" +
+          esc((pair.baseToken?.symbol || "?") + "/" + (pair.quoteToken?.symbol || "?")) +
+          " · " +
+          esc(pair.dexId || "") +
+          " · " +
+          label +
+          "</small></span>" +
+          "<span>" +
+          fmtPrice(pair.priceUsd) +
+          "<small>Liq " +
+          fmtCompact(pair.liquidity?.usd) +
+          " · Vol24h " +
+          fmtCompact(pair.volume?.h24) +
+          "</small></span>" +
+          "</button>"
+        );
+      })
+      .join("") + (sourceLabel ? '<p class="muted">Sumber: <a href="https://dexscreener.com" target="_blank" rel="noopener">DexScreener</a></p>' : "");
+  box.querySelectorAll(".token-result").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pair = lpLastResults[Number(btn.dataset.idx)];
+      const chain = chainFromDexId(pair.chainId);
+      if (!chain) {
+        setMsg("lpMsg", 'Pair ini berasal dari chain "' + (pair.chainId || "?") + '" yang TIDAK termasuk 7 chain simulasi (SOL, BASE, ROBINHOOD, BSC, HYPEREVM, ARC, ETH). Pair ditolak — tidak dipetakan ke chain lain.', true);
+        return;
+      }
+      selectToken(pair, chain);
+      setMsg("lpMsg", "Token dipilih: " + selectedToken.symbol + " di " + chain + ".");
+    });
+  });
+}
+async function searchLpTokens() {
+  const q = $("lpSearchInput").value.trim();
+  if (!q) {
+    setMsg("lpMsg", "Isi kata kunci atau alamat token dulu.", true);
+    return;
+  }
+  setMsg("lpMsg", "Mencari di DexScreener…");
+  try {
+    let pairs = [];
+    if (/^0x[0-9a-fA-F]{40}$/.test(q) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q)) {
+      const data = await api("/api/dex/token?address=" + encodeURIComponent(q));
+      pairs = data.pairs || [];
+    } else {
+      const data = await api("/api/dex/search?q=" + encodeURIComponent(q));
+      pairs = data.pairs || [];
+    }
+    const chainSel = $("lpChain").value;
+    if (chainSel !== "AUTO") {
+      pairs = pairs.filter((p) => chainFromDexId(p.chainId) === chainSel);
+    }
+    renderSearchResults(pairs.slice(0, 12), true);
+    setMsg("lpMsg", pairs.length ? "Klik hasil untuk memilih token." : "Tidak ada pair yang cocok.");
+  } catch (e) {
+    setMsg("lpMsg", e.friendly || e.message, true);
+  }
+}
+async function autopilotPick() {
+  const q = $("lpSearchInput").value.trim();
+  if (!q) return null;
+  const data = await api("/api/dex/token?address=" + encodeURIComponent(q));
+  const pairs = (data.pairs || []).filter((p) => chainFromDexId(p.chainId));
+  pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+  return pairs[0] || null;
+}
+async function openLp() {
+  let sel = selectedToken;
+  if (!sel) {
+    setMsg("lpMsg", "Auto-pilot: mencari token dari alamat yang ditempel…");
+    try {
+      const best = await autopilotPick();
+      if (!best) {
+        setMsg("lpMsg", "Auto-pilot gagal: alamat tidak ditemukan atau hanya ada di chain yang tidak didukung.", true);
+        return;
+      }
+      selectToken(best, chainFromDexId(best.chainId));
+      sel = selectedToken;
+    } catch (e) {
+      setMsg("lpMsg", e.friendly || e.message, true);
+      return;
+    }
+  }
+  const chainSel = $("lpChain").value;
+  const chain = chainSel === "AUTO" ? sel.chain : chainSel;
+  const amount = Number($("lpAmount").value) || 0;
+  // Min %/Max % (gaya hosted) diterjemahkan ke harga absolut dari harga
+  // token terpilih — kontrak API server TETAP minPrice/maxPrice absolut.
+  const minPct = Number($("lpMinPct").value);
+  const maxPct = Number($("lpMaxPct").value);
+  if (!(amount > 0)) {
+    setMsg("lpMsg", "Nominal harus lebih dari 0.", true);
+    return;
+  }
+  if (!isFinite(minPct) || !isFinite(maxPct) || minPct <= -100 || maxPct <= minPct) {
+    setMsg("lpMsg", "Range Min %/Max % tidak valid (Max % harus lebih besar dari Min %, dan Min % harus di atas −100%).", true);
+    return;
+  }
+  const minPrice = sel.price * (1 + minPct / 100);
+  const maxPrice = sel.price * (1 + maxPct / 100);
+  // SL/TP terminal dalam PERSEN seperti hosted (SL negatif, mis. -28; TP
+  // positif, mis. 22) — server mengonversinya ke harga absolut.
+  const slPct = $("lpSl").value === "" ? null : Number($("lpSl").value);
+  const tpPct = $("lpTp").value === "" ? null : Number($("lpTp").value);
+  try {
+    const r = await postJson("/api/lp/open", {
+      chain,
+      address: sel.address,
+      symbol: sel.symbol,
+      name: sel.name,
+      pair: sel.pair,
+      pairUrl: sel.pairUrl,
+      amount,
+      price: sel.price,
+      minPrice,
+      maxPrice,
+      side: lpSideVal,
+      strategy: lpStrategyVal,
+      quote: $("lpQuote").value,
+      slPct,
+      tpPct,
+      binStepBps: Number($("lpBinStep").value) || 25,
+      distribution: $("lpDistribution").value,
+    });
+    setMsg("lpMsg", "Posisi LP " + r.position.symbol + " dibuka di " + r.position.chain + " sebesar " + fmtMoney(r.position.amount) + ".");
+    await loadState();
+  } catch (e) {
+    setMsg("lpMsg", e.friendly || e.message, true);
+  }
+}
+
+/* ---------------- Monthly profit ---------------- */
+
+async function renderMonthly() {
+  const data = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+  const [y, m] = currentMonth.split("-").map(Number);
+  $("monthLabel").textContent = new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+  const t = data.totals;
+  // Sidebar: nilai portfolio + Total PnL memakai payload realtime terakhir
+  // (all-time live) bila ada; fallback ke totals /api/monthly.
+  const portfolioValue = rtData ? rtData.portfolioValue : t.totalPortfolioValue;
+  const totalPnlAll = rtData ? rtData.totalPnl : t.totalPnl;
+  $("mSideValue").textContent = fmtMoney(portfolioValue);
+  $("mSideDeposit").textContent = fmtCompact(t.allTimeDeposit);
+  $("mSideFeesClaimed").textContent = fmtMoney(t.feesClaimed);
+  $("mSideClaimable").textContent = fmtMoney(t.claimableFees);
+  const pnlEl = $("mSideTotalPnl");
+  pnlEl.textContent = (totalPnlAll >= 0 ? "+" : "−") + fmtMoney(Math.abs(totalPnlAll));
+  pnlEl.className = "num side-big " + (totalPnlAll >= 0 ? "pos" : "neg");
+  const pct = t.allTimeDeposit > 0 ? round2Client((totalPnlAll / t.allTimeDeposit) * 100) : 0;
+  const pill = $("mSideTotalPnlPct");
+  pill.textContent = (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+  pill.className = "pct-pill" + (pct < 0 ? " neg" : "");
+  $("mSideAvg").textContent = fmtMoney(t.avgInvested);
+  $("mSideWinRate").textContent = t.winRate + "%";
+  $("mSideBiggestWin").textContent = fmtMoney(t.biggestWin);
+  const head = $("monthPnlHead");
+  head.textContent = (t.totalPnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(t.totalPnl));
+  head.className = "num " + (t.totalPnl >= 0 ? "pos" : "neg");
+  // Kalender: offset hari pertama (Minggu = kolom 0), sel tint hijau/merah.
+  const today = new Date().toISOString().slice(0, 10);
+  const offset = new Date(y, m - 1, 1).getDay();
+  let cells = "";
+  for (let i = 0; i < offset; i++) cells += '<div class="cal-blank"></div>';
+  cells += data.days
+    .map(
+      (d) =>
+        '<div class="cal-day' +
+        (d.pnl > 0 ? " up"
+        : d.pnl < 0 ? " down"
+        : "") +
+        (d.date === today ? " today" : "") +
+        '"><span class="d">' +
+        d.day +
+        "</span>" +
+        (d.pnl !== 0 ? '<span class="pnl-val ' + (d.pnl > 0 ? "pos" : "neg") + '">' + (d.pnl > 0 ? "+" : "−") + fmtMoney(Math.abs(d.pnl)) + '</span><span class="cnt">' + d.positions + " posisi</span>" : "") +
+        "</div>",
+    )
+    .join("");
+  $("monthlyCalendar").innerHTML = cells;
+  return data;
+}
+
+/* ---------------- Card Studio (SATU renderer untuk preview + PNG + WebM) ---------------- */
+
+function drawCard(ctx, W, H, monthly) {
+  // Desain mengikuti kartu hosted (referensi screenshot Monthly Profit hosted):
+  // bingkai oranye tipis, latar gelap ber-grid halus, logo oranye + wordmark
+  // putih, eyebrow CALENDAR, judul Monthly Recap, bulan Bahasa Indonesia,
+  // MONTHLY PnL di kanan atas, label "LP DESK - SIMULATION", kalender dengan
+  // offset hari pertama (Minggu = kolom 0) dan sel PnL terisi solid, lalu
+  // baris statistik bawah 4 kolom (CLOSES / FEES / W/L / WIN RATE).
+  const ORANGE = "#f0760a";
+  const MUTED = "#8b98ab";
+  const GREEN = "#2fbf71";
+  const RED = "#e5484d";
+  ctx.fillStyle = "#0a0e14";
+  ctx.fillRect(0, 0, W, H);
+  const bright = Number($("bgBrightness").value) || 112;
+  ctx.save();
+  ctx.filter = "brightness(" + bright + "%)";
+  if (cardBg.type === "image" && cardBg.img) {
+    ctx.drawImage(cardBg.img, 0, 0, W, H);
+  } else if (cardBg.type === "video" && cardBg.video) {
+    try {
+      ctx.drawImage(cardBg.video, 0, 0, W, H);
+    } catch (_) {
+      /* frame belum siap */
+    }
+  }
+  ctx.restore();
+  if (cardBg.type) {
+    ctx.fillStyle = "rgba(6,10,16,0.55)";
+    ctx.fillRect(0, 0, W, H);
+  }
+  // Grid latar halus
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let gx = 80; gx < W; gx += 80) {
+    ctx.moveTo(gx + 0.5, 0);
+    ctx.lineTo(gx + 0.5, H);
+  }
+  for (let gy = 80; gy < H; gy += 80) {
+    ctx.moveTo(0, gy + 0.5);
+    ctx.lineTo(W, gy + 0.5);
+  }
+  ctx.stroke();
+  const t = monthly.totals;
+  const [y, m] = currentMonth.split("-").map(Number);
+  const MONTHS_ID = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+  const signed = (n) => {
+    const v = Number(n) || 0;
+    return (
+      (v > 0 ? "+"
+      : v < 0 ? "-"
+      : "") +
+      "$" +
+      Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    );
+  };
+  const rr = (x, yy, w, h, r) => {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, yy, w, h, r);
+    else ctx.rect(x, yy, w, h);
+  };
+  // Header: logo oranye + wordmark putih
+  ctx.fillStyle = ORANGE;
+  ctx.fillRect(96, 78, 5, 46);
+  ctx.beginPath();
+  ctx.moveTo(101, 80);
+  ctx.lineTo(140, 90);
+  ctx.lineTo(101, 101);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 46px " + FONT_STACK;
+  ctx.textAlign = "left";
+  ctx.fillText("ReagenCorp", 154, 118);
+  ctx.fillStyle = MUTED;
+  ctx.font = "600 20px " + FONT_STACK;
+  ctx.textAlign = "right";
+  ctx.fillText("LP DESK - SIMULATION", 1504, 112);
+  ctx.textAlign = "left";
+  // Blok judul
+  ctx.fillStyle = MUTED;
+  ctx.font = "700 23px " + FONT_STACK;
+  ctx.fillText("C A L E N D A R", 96, 218);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 92px " + FONT_STACK;
+  ctx.fillText("Monthly Recap", 96, 308);
+  ctx.fillStyle = "#a7b2c2";
+  ctx.font = "600 34px " + FONT_STACK;
+  ctx.fillText(MONTHS_ID[m - 1] + " " + y, 96, 358);
+  // MONTHLY PnL di kanan atas
+  ctx.textAlign = "right";
+  ctx.fillStyle = MUTED;
+  ctx.font = "600 22px " + FONT_STACK;
+  ctx.fillText("MONTHLY PNL", 1504, 218);
+  ctx.fillStyle =
+    t.totalPnl > 0 ? GREEN
+    : t.totalPnl < 0 ? RED
+    : "#ffffff";
+  ctx.font = "800 92px " + FONT_STACK;
+  ctx.fillText(signed(t.totalPnl), 1504, 310);
+  ctx.textAlign = "left";
+  // Kalender: offset hari pertama (Minggu = kolom 0), sel PnL terisi solid
+  const offset = new Date(y, m - 1, 1).getDay();
+  const rows = Math.ceil((offset + monthly.days.length) / 7);
+  const x0 = 96,
+    y0 = 396,
+    cellW = 192,
+    gapX = 12,
+    gapY = 10;
+  const cellH = Math.floor((452 - (rows - 1) * gapY) / rows);
+  monthly.days.forEach((d, i) => {
+    const idx = offset + i;
+    const col = idx % 7,
+      row = Math.floor(idx / 7);
+    const x = x0 + col * (cellW + gapX),
+      yy = y0 + row * (cellH + gapY);
+    if (d.pnl > 0 || d.pnl < 0) {
+      ctx.fillStyle = d.pnl > 0 ? "#0d9d68" : "#8a2e2e";
+      rr(x, yy, cellW, cellH, 12);
+      ctx.fill();
+      ctx.fillStyle = d.pnl > 0 ? "#eafff5" : "#ffe9e9";
+      ctx.font = "600 19px " + FONT_STACK;
+      ctx.fillText(String(d.day), x + 14, yy + 30);
+      ctx.font = "700 30px " + FONT_STACK;
+      ctx.fillText(signed(d.pnl), x + 14, yy + cellH - 16);
+    } else {
+      ctx.fillStyle = MUTED;
+      ctx.font = "600 19px " + FONT_STACK;
+      ctx.fillText(String(d.day), x + 14, yy + 30);
+    }
+  });
+  // Statistik bawah: 4 kolom berlabel
+  const stats = [
+    ["CLOSES", String(t.closes)],
+    ["FEES", fmtMoney(t.feesClaimed)],
+    ["W/L", t.winDays + "/" + t.lossDays],
+    ["WIN RATE", t.winRate + "%"],
+  ];
+  stats.forEach((s, i) => {
+    const x = 96 + i * 364;
+    ctx.fillStyle = MUTED;
+    ctx.font = "600 20px " + FONT_STACK;
+    ctx.fillText(s[0], x, 884);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 42px " + FONT_STACK;
+    ctx.fillText(s[1], x, 930);
+  });
+  // Bingkai oranye tipis
+  ctx.strokeStyle = ORANGE;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(40, 40, W - 80, H - 80);
+}
+async function renderCardPreview() {
+  const monthly = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+  cardMonthlyCache = monthly;
+  const canvas = $("cardCanvas");
+  drawCard(canvas.getContext("2d"), canvas.width, canvas.height, monthly);
+  return monthly;
+}
+function startVideoPreviewLoop() {
+  if (videoPreviewRaf) return;
+  const tick = () => {
+    videoPreviewRaf = requestAnimationFrame(tick);
+    // Preview video: gambar ulang frame video berjalan ke canvas preview
+    // memakai renderer + cache yang sama (tanpa fetch berulang).
+    if (cardBg.type === "video" && cardBg.video && !cardBg.video.paused && cardMonthlyCache) {
+      const canvas = $("cardCanvas");
+      if (canvas && $("tab-monthly").classList.contains("active")) {
+        drawCard(canvas.getContext("2d"), canvas.width, canvas.height, cardMonthlyCache);
+      }
+    }
+  };
+  tick();
+}
+async function downloadCard() {
+  const monthly = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+  cardRecording = true;
+  const fileBase = "ReagenCorp-profit-" + currentMonth;
+  if (cardBg.type === "video" && cardBg.video) {
+    setMsg("cardMsg", "Merekam video card 10 detik (WebM HD, 12 Mbps)…");
+    const off = document.createElement("canvas");
+    off.width = 1600;
+    off.height = 1000;
+    const octx = off.getContext("2d");
+    const stream = off.captureStream(30);
+    const rec = new MediaRecorder(stream, { mimeType: "video/webm", videoBitsPerSecond: 12_000_000 });
+    const chunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size) chunks.push(e.data);
+    };
+    const done = new Promise((r) => {
+      rec.onstop = r;
+    });
+    const video = cardBg.video;
+    const wasPaused = video.paused;
+    video.loop = true;
+    try {
+      await video.play();
+    } catch (_) {
+      /* tetap rekam frame diam */
+    }
+    rec.start(200);
+    const started = performance.now();
+    await new Promise((resolve) => {
+      const tick = () => {
+        drawCard(octx, 1600, 1000, monthly);
+        if (performance.now() - started < 10000) requestAnimationFrame(tick);
+        else resolve();
+      };
+      tick();
+    });
+    rec.stop();
+    await done;
+    if (wasPaused) video.pause();
+    const blob = new Blob(chunks, { type: "video/webm" });
+    triggerDownload(URL.createObjectURL(blob), fileBase + ".webm");
+    setMsg("cardMsg", "Video card diunduh: " + fileBase + ".webm");
+    cardRecording = false;
+    return;
+  }
+  const off = document.createElement("canvas");
+  off.width = 1600;
+  off.height = 1000;
+  drawCard(off.getContext("2d"), 1600, 1000, monthly);
+  const a = document.createElement("a");
+  a.download = fileBase + ".png";
+  a.href = off.toDataURL("image/png");
+  a.click();
+  setMsg("cardMsg", "Kartu diunduh: " + fileBase + ".png");
+  cardRecording = false;
+}
+function triggerDownload(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function setBgInfo() {
+  const info = $("bgInfo");
+  if (!cardBg.type) {
+    info.textContent = "Belum ada background. Input gambar dan video saling eksklusif.";
+    $("bgRemoveBtn").hidden = true;
+    $("bgPlayBtn").hidden = true;
+    return;
+  }
+  info.textContent = "Background aktif: " + (cardBg.type === "image" ? "GAMBAR → ekspor PNG HD" : "VIDEO → ekspor WebM HD 10 detik") + " · file: " + cardBg.name;
+  $("bgRemoveBtn").hidden = false;
+  $("bgPlayBtn").hidden = cardBg.type !== "video";
+}
+
+/* ---------------- Settings ---------------- */
+
+async function saveSettings() {
+  const data = await postJson("/api/settings", { settings });
+  settings = data.settings;
+  renderCrew();
+  return settings;
+}
+function fillNaraForm() {
+  const at = settings.autoTrading;
+  $("naraEnabled").checked = !!at.enabled;
+  $("naraMinScore").value = at.minScore;
+  $("naraAmount").value = at.amountPerPosition;
+  $("naraMaxPos").value = at.maxPositions;
+  $("naraChain").value = at.chainFilter;
+  $("naraRange").value = at.rangePreset;
+  $("naraVerdict").value = at.verdictFilter;
+  $("naraDailyLoss").value = at.dailyLossLimit;
+  $("naraMinLiq").value = at.minLiquidity;
+  $("naraMinHolder").value = at.minHolder;
+  renderAgentLogs("naraLogs", "Nara");
+}
+function readNaraForm() {
+  const at = settings.autoTrading;
+  at.enabled = $("naraEnabled").checked;
+  at.minScore = Number($("naraMinScore").value) || 0;
+  at.amountPerPosition = Number($("naraAmount").value) || 0;
+  at.maxPositions = Number($("naraMaxPos").value) || 0;
+  at.chainFilter = $("naraChain").value;
+  at.rangePreset = $("naraRange").value;
+  at.verdictFilter = $("naraVerdict").value;
+  at.dailyLossLimit = Number($("naraDailyLoss").value) || 0;
+  at.minLiquidity = Number($("naraMinLiq").value) || 0;
+  at.minHolder = Number($("naraMinHolder").value) || 0;
+}
+function fillByteForm() {
+  const tp = settings.tpSl;
+  $("byteArmed").checked = !!tp.armed;
+  $("byteTp").value = tp.defaultTpPct;
+  $("byteSl").value = tp.defaultSlPct;
+  renderByteChart();
+  renderAgentLogs("byteLogs", "Byte");
+}
+function renderByteChart() {
+  const box = $("byteChart");
+  const opens = ((deskState && deskState.positions) || []).filter((p) => p.status === "open");
+  if (!opens.length) {
+    box.innerHTML = '<p class="muted">Tidak ada posisi terbuka.</p>';
+    return;
+  }
+  box.innerHTML = opens
+    .map((p) => {
+      const hasSl = p.sl != null && Number(p.sl) > 0;
+      const hasTp = p.tp != null && Number(p.tp) > 0;
+      if (!hasSl && !hasTp) return '<div class="byte-row"><strong>' + esc(p.symbol) + "</strong> — tanpa SL/TP.</div>";
+      const lo = hasSl ? Number(p.sl) : p.entryPrice * 0.8;
+      const hi = hasTp ? Number(p.tp) : p.entryPrice * 1.2;
+      const pos = Math.max(0, Math.min(100, ((p.currentPrice - lo) / (hi - lo)) * 100));
+      const slW = hasSl ? ((Number(p.sl) - lo) / (hi - lo)) * 100 : 0;
+      const tpW = hasTp ? ((hi - Number(p.tp)) / (hi - lo)) * 100 : 0;
+      return (
+        '<div class="byte-row"><strong>' +
+        esc(p.symbol) +
+        '</strong> <span class="chain-badge">' +
+        esc(p.chain) +
+        "</span> harga " +
+        fmtPrice(p.currentPrice) +
+        " · SL " +
+        (hasSl ? fmtPrice(p.sl) : "—") +
+        " · TP " +
+        (hasTp ? fmtPrice(p.tp) : "—") +
+        '<div class="byte-track"><span class="byte-sl" style="width:' +
+        slW +
+        '%"></span><span class="byte-tp" style="width:' +
+        tpW +
+        '%"></span><span class="byte-marker" style="left:calc(' +
+        pos +
+        '% - 2px)"></span></div></div>'
+      );
+    })
+    .join("");
+}
+function renderSora() {
+  const box = $("soraBody");
+  const positions = (deskState && deskState.positions) || [];
+  const opens = positions.filter((p) => p.status === "open");
+  const closed = positions.filter((p) => p.status === "closed" || p.status === "rebalanced");
+  const totalCapital = 5000;
+  const allocated = round2Client(opens.reduce((s, p) => s + (Number(p.amount) || 0), 0));
+  const remaining = round2Client(totalCapital - allocated);
+  const totalPnl = round2Client(
+    positions.reduce((s, p) => {
+      const fees = (Number(p.fees) || 0) + (Number(p.rewards) || 0);
+      return (
+        s +
+        (p.status === "open" ? (Number(p.value) || 0) + fees - (Number(p.amount) || 0)
+        : p.closePnl != null ? p.closePnl
+        : 0)
+      );
+    }, 0),
+  );
+  const wins = closed.filter((p) => (p.closePnl || 0) > 0).length;
+  const winRate = closed.length ? Math.round((wins / closed.length) * 10000) / 100 : 0;
+  const fees = round2Client(positions.reduce((s, p) => s + (Number(p.fees) || 0) + (Number(p.rewards) || 0), 0)) + (Number(deskState.claimedFeesTotal) || 0);
+  const byChain = {};
+  for (const p of opens) byChain[p.chain] = round2Client((byChain[p.chain] || 0) + (Number(p.amount) || 0));
+  const chainRows = Object.entries(byChain).sort((a, b) => b[1] - a[1]);
+  const topChain = chainRows[0];
+  const insights = [];
+  if (topChain && allocated > 0 && topChain[1] / allocated > 0.6) insights.push("Konsentrasi tinggi: " + Math.round((topChain[1] / allocated) * 100) + "% modal terbuka ada di " + topChain[0] + ". Pertimbangkan diversifikasi chain.");
+  const outCount = opens.filter((p) => !p.inRange).length;
+  if (outCount) insights.push(outCount + " posisi di luar range — pertimbangkan rebalance atau tutup.");
+  if (remaining < totalCapital * 0.1 && opens.length) insights.push("Modal bebas tinggal " + fmtMoney(remaining) + " — hampir habis teralokasi.");
+  if (!insights.length) insights.push("Alokasi terlihat seimbang; tidak ada konsentrasi atau posisi bermasalah yang menonjol.");
+  const health = opens
+    .map((p) => {
+      const movePct = p.entryPrice > 0 ? (Math.abs(p.currentPrice - p.entryPrice) / p.entryPrice) * 100 : 0;
+      const risk =
+        !p.inRange ? "Tinggi"
+        : movePct > 10 ? "Sedang"
+        : "Rendah";
+      return (
+        '<div class="log-row"><strong>' +
+        esc(p.symbol) +
+        '</strong> <span class="chain-badge">' +
+        esc(p.chain) +
+        "</span> " +
+        (p.inRange ? "IN RANGE" : "OUT OF RANGE") +
+        " · risiko " +
+        risk +
+        " · uPnL " +
+        fmtMoney((Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)) +
+        "</div>"
+      );
+    })
+    .join("");
+  const recs = [];
+  if (outCount) recs.push("Rebalance/tutup " + outCount + " posisi out-of-range.");
+  if (fees > 0) recs.push("Claim fee yang tersedia agar tercatat di Monthly Profit.");
+  if (!recs.length) recs.push("Tidak ada tindakan mendesak. Pantau lewat panel realtime.");
+  box.innerHTML =
+    '<div class="sora-grid">' +
+    "<div><span>Modal teralokasi</span><strong>" +
+    fmtMoney(allocated) +
+    "</strong></div>" +
+    "<div><span>Remaining capital</span><strong>" +
+    fmtMoney(remaining) +
+    "</strong></div>" +
+    '<div><span>Total PnL</span><strong class="' +
+    (totalPnl >= 0 ? "pos" : "neg") +
+    '">' +
+    fmtMoney(totalPnl) +
+    "</strong></div>" +
+    "<div><span>Win rate (posisi tutup)</span><strong>" +
+    winRate +
+    "%</strong></div>" +
+    "<div><span>Total fees (klaim + belum)</span><strong>" +
+    fmtMoney(fees) +
+    "</strong></div>" +
+    "<div><span>Posisi terbuka / total</span><strong>" +
+    opens.length +
+    " / " +
+    positions.length +
+    "</strong></div>" +
+    "</div>" +
+    "<h4>Alokasi per chain</h4>" +
+    (chainRows.length ?
+      chainRows.map(([c, v]) => '<div class="log-row"><span class="chain-badge">' + c + "</span> " + fmtMoney(v) + " (" + (allocated > 0 ? Math.round((v / allocated) * 100) : 0) + "%)</div>").join("")
+    : '<p class="muted">Belum ada alokasi.</p>') +
+    "<h4>Concentration insights</h4>" +
+    insights.map((i) => '<div class="log-row">' + esc(i) + "</div>").join("") +
+    "<h4>Kesehatan posisi</h4>" +
+    (health || '<p class="muted">Tidak ada posisi terbuka.</p>') +
+    "<h4>Rekomendasi</h4>" +
+    recs.map((r) => '<div class="log-row">' + esc(r) + "</div>").join("");
+  renderAgentLogs("soraLogs", "Sora");
+}
+
+/* ---------------- Top LP — Discover ---------------- */
+
+const TF_LABEL = { m5: "5M", h1: "1H", h6: "6H", h24: "24H" };
+const TF_VOL = { m5: "volume_m5", h1: "volume_h1", h6: "volume_h6", h24: "volume_h24" };
+const TF_FEE = { m5: "fee_tvl_5m", h1: "fee_tvl_1h", h6: "fee_tvl_6h", h24: "fee_tvl_24h" };
+function allCandidates() {
+  if (!candidatesData) return [];
+  // Bentuk respons menyamakan hosted: recommendations + pending_candidates.
+  return (candidatesData.recommendations || []).concat(candidatesData.pending_candidates || []);
+}
+function sparklineSvg(c) {
+  const vals = [c.price_change_m5 || 0, c.price_change_h1 || 0, c.price_change_h6 || 0, c.price_change_24h || 0];
+  const min = Math.min(...vals, 0),
+    max = Math.max(...vals, 0);
+  const range = max - min || 1;
+  const pts = vals.map((v, i) => 4 + i * 14 + "," + (20 - ((v - min) / range) * 16)).join(" ");
+  const up = (c.price_change_24h || 0) >= 0;
+  return '<svg class="spark" width="48" height="24" viewBox="0 0 48 24"><polyline points="' + pts + '" fill="none" stroke="' + (up ? "#2fbf71" : "#e5484d") + '" stroke-width="2"/></svg>';
+}
+function feeTvlCell(v) {
+  return v == null ? "—" : fmtPct(v);
+}
+function discoverRows() {
+  let rows = allCandidates().slice();
+  if (discoverState.chain !== "ALL") rows = rows.filter((c) => c.chain === discoverState.chain);
+  if (discoverState.hideRisky) rows = rows.filter((c) => !(c.safety_score != null && c.safety_score < 50));
+  const tf = discoverState.tf;
+  if (discoverState.tab === "trending") rows.sort((a, b) => (b[TF_VOL[tf]] || 0) - (a[TF_VOL[tf]] || 0));
+  else if (discoverState.tab === "new") rows.sort((a, b) => (b.pair_created_at || 0) - (a.pair_created_at || 0));
+  else if (discoverState.tab === "feeTvl") rows.sort((a, b) => (b[TF_FEE[tf]] != null ? b[TF_FEE[tf]] : -1) - (a[TF_FEE[tf]] != null ? a[TF_FEE[tf]] : -1));
+  else if (discoverState.tab === "rising") rows.sort((a, b) => (b.fee_tvl_24h != null ? b.fee_tvl_24h : -1) - (a.fee_tvl_24h != null ? a.fee_tvl_24h : -1));
+  return rows;
+}
+function renderDiscover() {
+  const body = $("discoverBody");
+  const rows = discoverRows();
+  if (!candidatesData) {
+    body.innerHTML = '<tr><td colspan="17" class="muted">Memuat kandidat…</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="17" class="muted">Tidak ada kandidat untuk tab/filter ini. ' + (discoverState.tab === "rising" ? "Rising fees kosong secara jujur bila tidak ada data fee Meteora yang naik." : "") + "</td></tr>";
+    return;
+  }
+  body.innerHTML = rows
+    .map((c) => {
+      const dd = c.due_diligence || {};
+      const ddDone = (dd.completed_checks || 0) >= 6;
+      const chg = c.price_change_24h || 0;
+      const main =
+        '<tr class="disc-row" data-addr="' +
+        esc(c.address) +
+        '">' +
+        '<td data-label="Token"><span class="tok-name">' +
+        esc(c.symbol) +
+        '</span> <span class="tok-sub">' +
+        c.pool_count +
+        " pool · " +
+        esc(c.chain) +
+        "</span><br>" +
+        (c.rank ? '<span class="rank-badge">#' + c.rank + "</span> " : "") +
+        (ddDone ? '<span class="rank-badge">DD: ' + esc(dd.final_verdict) + "</span>" : '<span class="dd-pending">DD Pending — belum diperiksa, bukan rekomendasi</span>') +
+        "</td>" +
+        '<td data-label="Age">' +
+        fmtAge(c.pair_created_at) +
+        "</td>" +
+        '<td data-label="Price 24h">' +
+        fmtPrice(c.price_usd) +
+        ' <span class="' +
+        (chg >= 0 ? "pos" : "neg") +
+        '">' +
+        (chg >= 0 ? "+" : "") +
+        chg +
+        "%</span>" +
+        sparklineSvg(c) +
+        "</td>" +
+        '<td data-label="MCap">' +
+        (c.market_cap_usd ? fmtCompact(c.market_cap_usd) : "—") +
+        "</td>" +
+        '<td data-label="Holders">' +
+        fmtCount(c.holders_count) +
+        "</td>" +
+        '<td data-label="Vol 5M">' +
+        fmtCompact(c.volume_m5) +
+        "</td>" +
+        '<td data-label="Vol 1H">' +
+        fmtCompact(c.volume_h1) +
+        "</td>" +
+        '<td data-label="Vol 6H">' +
+        fmtCompact(c.volume_h6) +
+        "</td>" +
+        '<td data-label="Vol 24H">' +
+        fmtCompact(c.volume_24h) +
+        "</td>" +
+        '<td data-label="Liquidity">' +
+        fmtCompact(c.liquidity_usd) +
+        "</td>" +
+        '<td data-label="F/T 5M">' +
+        feeTvlCell(c.fee_tvl_5m) +
+        "</td>" +
+        '<td data-label="F/T 1H">' +
+        feeTvlCell(c.fee_tvl_1h) +
+        "</td>" +
+        '<td data-label="F/T 6H">' +
+        feeTvlCell(c.fee_tvl_6h) +
+        "</td>" +
+        '<td data-label="F/T 24H">' +
+        feeTvlCell(c.fee_tvl_24h) +
+        "</td>" +
+        '<td data-label="Smart LP" title="Smart LP tidak tersedia dari sumber publik mana pun.">—</td>' +
+        '<td data-label="Safety">' +
+        (c.safety_score == null ? "—" : c.safety_score) +
+        "</td>" +
+        '<td data-label="Aksi"><button type="button" class="open-pool-btn" data-openpool="' +
+        esc(c.address) +
+        '">Open pool</button></td>' +
+        "</tr>";
+      let detail = "";
+      if (discoverState.expanded === c.address) {
+        detail = '<tr class="disc-detail"><td colspan="17">' + candidateDetailHtml(c) + "</td></tr>";
+      }
+      return main + detail;
+    })
+    .join("");
+  body.querySelectorAll("tr.disc-row").forEach((tr) => {
+    tr.addEventListener("click", (ev) => {
+      if (ev.target.closest("button")) return;
+      const addr = tr.dataset.addr;
+      discoverState.expanded = discoverState.expanded === addr ? null : addr;
+      renderDiscover();
+    });
+  });
+  body.querySelectorAll("[data-openpool]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openPoolFromDiscover(btn.dataset.openpool);
+    });
+  });
+  body.querySelectorAll("[data-copyca]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      copyCa(btn.dataset.copyca, btn);
+    });
+  });
+  body.querySelectorAll("[data-detail]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openCandidateModal(btn.dataset.detail);
+    });
+  });
+  body.querySelectorAll("[data-dd]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openDdModal(btn.dataset.dd);
+    });
+  });
+}
+function candidateDetailHtml(c) {
+  const aa = c.agent_analysis || {};
+  const dd = c.due_diligence || {};
+  const listOr = (arr, empty) => (arr && arr.length ? "<ul>" + arr.map((x) => "<li>" + esc(x) + "</li>").join("") + "</ul>" : '<p class="muted">' + empty + "</p>");
+  return (
+    '<div class="detail-grid">' +
+    "<div><h4>Analisis agent</h4>" +
+    (aa.status === "unavailable" ? "<p><strong>SECURITY UNAVAILABLE</strong> — confidence rendah, jangan dianggap aman.</p>" : "") +
+    "<p>Skor agent: <strong>" +
+    (aa.score == null ? "—" : aa.score + "/100") +
+    "</strong> · Verdict: <strong>" +
+    esc(aa.verdict || "—") +
+    "</strong> · Confidence: " +
+    esc(aa.confidence || "—") +
+    " · Status data: " +
+    esc(aa.status || "—") +
+    "<br>" +
+    "Security 45%: " +
+    (aa.security_score == null ? "—" : aa.security_score) +
+    " · Organic proxy 25%: " +
+    (aa.organic_proxy_score == null ? "—" : aa.organic_proxy_score) +
+    " · Market quality 30%: " +
+    (c.market_score == null ? "—" : c.market_score) +
+    " · Safety: " +
+    (c.safety_score == null ? "—" : c.safety_score) +
+    "<br>" +
+    "Holders: " +
+    (aa.holder_count == null ? "tidak tersedia" : fmtCount(aa.holder_count)) +
+    (aa.top_holders_percent != null ? " · 10 holder teratas: " + aa.top_holders_percent + "%" : "") +
+    " · Likuiditas: " +
+    fmtMoney(c.liquidity_usd) +
+    " · Volume 24h: " +
+    fmtMoney(c.volume_24h) +
+    " · Market status: " +
+    esc(c.market_status || "—") +
+    "</p>" +
+    "<h4>Rationale</h4>" +
+    listOr(c.rationale, "Tidak ada rationale.") +
+    "<h4>Sisi positif</h4>" +
+    listOr(aa.positives, "Tidak ada catatan positif.") +
+    "<h4>Risiko</h4>" +
+    listOr(aa.risks, "Tidak ada risiko yang ter-flag.") +
+    (aa.limitations || []).map((l) => '<p class="muted">' + esc(l) + "</p>").join("") +
+    '<p class="muted">Sumber: ' +
+    esc((aa.sources || []).join(", ") || "—") +
+    " · Dianalisis: " +
+    (aa.analyzed_at ? new Date(aa.analyzed_at).toLocaleString("id-ID") : "—") +
+    "</p>" +
+    "</div>" +
+    '<div><h4>Contract Address</h4><p style="word-break:break-all">' +
+    esc(c.address) +
+    "</p>" +
+    '<div class="actions"><button type="button" class="copy-ca-btn" data-copyca="' +
+    esc(c.address) +
+    '">Copy CA</button>' +
+    '<button type="button" class="secondary" data-detail="' +
+    esc(c.address) +
+    '">Modal detail</button>' +
+    '<button type="button" class="secondary" data-dd="' +
+    esc(c.address) +
+    '">Due diligence manual</button></div>' +
+    '<p class="muted">DD manual: ' +
+    (dd.completed_checks || 0) +
+    "/6 cek · verdict " +
+    esc(dd.final_verdict || "Pending") +
+    " · skor DD " +
+    (c.due_diligence_score || 0) +
+    '/100 · Pair: <a href="' +
+    esc(c.dexscreener_url || "#") +
+    '" target="_blank" rel="noopener">DexScreener</a></p></div>' +
+    "</div>"
+  );
+}
+async function copyCa(text, btn) {
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    // Fallback kompatibel webview: textarea sementara + execCommand.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (_) {
+      ok = false;
+    }
+  }
+  if (btn) {
+    const old = btn.textContent;
+    btn.textContent = ok ? "Tersalin ✓" : "Gagal menyalin";
+    setTimeout(() => {
+      btn.textContent = old;
+    }, 2000);
+  }
+  if (!ok) showToast("Clipboard tidak tersedia di webview ini — salin alamat manual dari teks CA.", true);
+}
+function openCandidateModal(address) {
+  const c = allCandidates().find((x) => x.address === address);
+  if (!c) return;
+  $("candidateDetail").innerHTML = candidateDetailHtml(c);
+  $("candidateModal").hidden = false;
+  $("candidateDetail")
+    .querySelectorAll("[data-copyca]")
+    .forEach((b) => b.addEventListener("click", () => copyCa(b.dataset.copyca, b)));
+  $("candidateDetail")
+    .querySelectorAll("[data-dd]")
+    .forEach((b) =>
+      b.addEventListener("click", () => {
+        $("candidateModal").hidden = true;
+        openDdModal(b.dataset.dd);
+      }),
+    );
+}
+const DD_CHECKS = [
+  ["organic", "Organic score (GMGN)"],
+  ["holders", "Distribusi holder (bubblemaps)"],
+  ["bundling", "Bundling (isitbundled)"],
+  ["cabal", "Kontrol cabal (gatekept / Padre)"],
+  ["sameBlock", "Same-block buyers (DevsNightmareProbot)"],
+  ["social", "Riwayat sosial (Fable intel)"],
+];
+function openDdModal(address) {
+  const c = allCandidates().find((x) => x.address === address);
+  if (!c) return;
+  ddContext = c;
+  // Cek lengkap tersimpan di state desk (dueDiligence per alamat); kandidat
+  // hanya membawa ringkasannya di field due_diligence.
+  const dd = ((deskState && deskState.dueDiligence) || {})[c.address] || { checks: {}, notes: "" };
+  $("ddForm").innerHTML =
+    "<p><strong>" +
+    esc(c.symbol) +
+    '</strong> <span class="chain-badge">' +
+    esc(c.chain) +
+    '</span><br><span class="muted" style="word-break:break-all">' +
+    esc(c.address) +
+    "</span></p>" +
+    DD_CHECKS.map(
+      ([key, label]) =>
+        "<label>" +
+        label +
+        ' <select data-ddcheck="' +
+        key +
+        '">' +
+        '<option value="pending"' +
+        ((dd.checks?.[key] || "pending") === "pending" ? " selected" : "") +
+        ">Belum diperiksa</option>" +
+        '<option value="pass"' +
+        (dd.checks?.[key] === "pass" ? " selected" : "") +
+        ">Lolos</option>" +
+        '<option value="warn"' +
+        (dd.checks?.[key] === "warn" ? " selected" : "") +
+        ">Peringatan</option>" +
+        '<option value="fail"' +
+        (dd.checks?.[key] === "fail" ? " selected" : "") +
+        ">Gagal</option>" +
+        "</select></label>",
+    ).join("");
+  $("ddNotes").value = dd.notes || "";
+  setMsg("ddMsg", "");
+  $("ddModal").hidden = false;
+}
+async function saveDd() {
+  if (!ddContext) return;
+  const checks = {};
+  document.querySelectorAll("[data-ddcheck]").forEach((sel) => {
+    checks[sel.dataset.ddcheck] = sel.value;
+  });
+  try {
+    const r = await postJson("/api/dd", { address: ddContext.address, chain: ddContext.chain, symbol: ddContext.symbol, checks, notes: $("ddNotes").value });
+    setMsg("ddMsg", "DD tersimpan. Verdict: " + r.dd.verdict + " (" + r.dd.completedChecks + "/6 cek).");
+    candidatesData = await api("/api/candidates");
+    await loadState();
+    renderDiscover();
+  } catch (e) {
+    setMsg("ddMsg", e.friendly || e.message, true);
+  }
+}
+async function loadCandidates(forceMsg) {
+  try {
+    candidatesData = await api("/api/candidates");
+    const noteEl = $("discSourceNote");
+    if (noteEl && candidatesData.source_note) noteEl.textContent = candidatesData.source_note;
+    renderDiscover();
+    if (forceMsg) setMsg("discMsg", "Kandidat diperbarui: " + allCandidates().length + " token (" + (candidatesData.recommendations || []).length + " berperingkat + " + (candidatesData.pending_candidates || []).length + " pending).");
+  } catch (e) {
+    setMsg("discMsg", "Gagal memuat kandidat: " + (e.friendly || e.message), true);
+  }
+}
+function openPoolFromDiscover(address) {
+  switchTab("copylp");
+  $("copyCaInput").value = address;
+  discoverCopyLp();
+}
+
+/* ---------------- Copy LP ---------------- */
+
+async function discoverCopyLp() {
+  const address = $("copyCaInput").value.trim();
+  if (!address) {
+    setMsg("copyMsg", "Tempel CA token dulu.", true);
+    return;
+  }
+  setMsg("copyMsg", "Mencari pool di Meteora DLMM Data API + DexScreener…");
+  try {
+    copyDiscovery = await api("/api/copylp/discover?address=" + encodeURIComponent(address));
+    copyTokenChange24h = copyDiscovery.token ? Number(copyDiscovery.token.change24h) || 0 : 0;
+    const t = copyDiscovery.token;
+    $("copyTokenHead").innerHTML =
+      t ? "<h3>" + esc(t.name) + " (" + esc(t.symbol) + ") — " + fmtPrice(t.price) + " · MCap " + (t.marketCap ? fmtCompact(t.marketCap) : "—") + " · 24h " + (t.change24h >= 0 ? "+" : "") + t.change24h + "%</h3>" : "";
+    setMsg("copyMsg", "Ditemukan " + copyDiscovery.meteoraCount + " pool Meteora DLMM + " + copyDiscovery.dexCount + " pool DexScreener." + (copyDiscovery.notes && copyDiscovery.notes.length ? " " + copyDiscovery.notes.join(" ") : ""));
+    renderCopyPools();
+    if (copyDiscovery.meteoraPools.length) selectCopyPool(copyDiscovery.meteoraPools[0]);
+    else if (copyDiscovery.dexPools.length) selectCopyPool(copyDiscovery.dexPools[0]);
+  } catch (e) {
+    setMsg("copyMsg", e.friendly || e.message, true);
+  }
+}
+function poolCardHtml(p, kind) {
+  return (
+    '<button type="button" class="pool-card" data-pooladdr="' +
+    esc(p.poolAddress) +
+    '" data-kind="' +
+    kind +
+    '">' +
+    '<span class="pool-top"><span>' +
+    esc(p.name) +
+    ' <span class="chain-badge">' +
+    esc(p.chain) +
+    "</span></span><span>" +
+    fmtPrice(p.price) +
+    "</span></span>" +
+    '<span class="pool-meta">' +
+    esc(p.source) +
+    " · " +
+    esc(p.protocol) +
+    " · Fee: " +
+    (p.feePct == null ? "— (tidak dipublikasikan)" : fmtPct(p.feePct) + (p.baseFeePct != null ? " (base " + fmtPct(p.baseFeePct) + " + dinamis " + fmtPct(p.dynamicFeePct) + ")" : "")) +
+    " · Bin step: " +
+    (p.binStep == null ? "—" : p.binStep) +
+    " · TVL/Likuiditas: " +
+    fmtCompact(p.tvl) +
+    " · Vol 24h: " +
+    fmtCompact(p.volume24h) +
+    (p.fees24h != null ? " · Fees 24h: " + fmtCompact(p.fees24h) + " · Fee/TVL 24h: " + fmtPct(p.feeTvl24hPct) + " · Est. APR: " + fmtPct(p.aprPct) : "") +
+    "</span></button>"
+  );
+}
+function renderCopyPools() {
+  const box = $("copyPoolList");
+  if (!copyDiscovery) {
+    box.innerHTML = '<p class="muted">Belum ada discovery.</p>';
+    return;
+  }
+  const m = copyDiscovery.meteoraPools || [];
+  const d = copyDiscovery.dexPools || [];
+  box.innerHTML =
+    "<h4>Pool Meteora DLMM — Solana (" +
+    m.length +
+    ")</h4>" +
+    (m.length ? m.map((p) => poolCardHtml(p, "meteora")).join("") : '<p class="muted">Tidak ada pool Meteora untuk CA ini.</p>') +
+    "<h4>Pool DexScreener — semua chain (" +
+    d.length +
+    ")</h4>" +
+    (d.length ? d.map((p) => poolCardHtml(p, "dex")).join("") : '<p class="muted">Tidak ada pool DexScreener untuk CA ini.</p>');
+  box.querySelectorAll(".pool-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const all = m.concat(d);
+      const pool = all.find((p) => p.poolAddress === card.dataset.pooladdr);
+      if (pool) selectCopyPool(pool);
+    });
+  });
+}
+function selectCopyPool(pool) {
+  copySelectedPool = pool;
+  document.querySelectorAll(".pool-card").forEach((c) => c.classList.toggle("selected", c.dataset.pooladdr === pool.poolAddress));
+  $("zapPoolInfo").textContent = "Pool terpilih: " + pool.name + " (" + pool.source + ", " + pool.chain + ") · harga " + fmtPrice(pool.price);
+  const stats = [
+    ["Harga", fmtPrice(pool.price)],
+    ["MCap token", pool.marketCap ? fmtCompact(pool.marketCap) : "—"],
+    ["TVL", fmtCompact(pool.tvl)],
+    ["Volume 24h", fmtCompact(pool.volume24h)],
+    ["Fees 24h", pool.fees24h == null ? "—" : fmtCompact(pool.fees24h)],
+    ["Fee/TVL 24h", pool.feeTvl24hPct == null ? "—" : fmtPct(pool.feeTvl24hPct)],
+    ["Est. fee APR", pool.aprPct == null ? "—" : fmtPct(pool.aprPct)],
+    ["Bin step", pool.binStep == null ? "—" : pool.binStep],
+  ];
+  $("copyStats").innerHTML = stats.map(([k, v]) => "<div><span>" + k + "</span><strong>" + v + "</strong></div>").join("");
+  applyZapRange("auto");
+  loadPoolPositions();
+}
+async function applyZapRange(mode) {
+  const pool = copySelectedPool;
+  if (!pool) return;
+  const price = Number(pool.price) || 0;
+  if (!(price > 0)) return;
+  const strategy = $("zapStrategy").value;
+  if (mode === "auto") {
+    try {
+      const r = await postJson("/api/copylp/range", { price, binStepBps: pool.binStep || 25, strategy, change24h: copyTokenChange24h });
+      $("zapMin").value = r.minPrice;
+      $("zapMax").value = r.maxPrice;
+      $("zapRangeInfo").textContent = "Range server dari volatilitas 24j + bin step " + (pool.binStep || 25) + ": bins " + r.lowerBin + " … +" + r.upperBin + " (step " + r.stepPct + "%/bin).";
+      pool._range = r;
+    } catch (e) {
+      setMsg("zapMsg", e.friendly || e.message, true);
+    }
+  } else {
+    const presets = { both5: [-5, 5], both10: [-10, 10], below50: [-50, 0], below70: [-70, 0] };
+    const pr = presets[mode];
+    if (pr) {
+      $("zapMin").value = fmtPrice(price * (1 + pr[0] / 100));
+      $("zapMax").value = fmtPrice(price * (1 + pr[1] / 100));
+      pool._range = null;
+    }
+  }
+  updateZapNote();
+  updateZapSummary();
+}
+function updateZapNote() {
+  const pool = copySelectedPool;
+  const note = $("zapRangeNote");
+  if (!pool) {
+    note.textContent = "";
+    return;
+  }
+  const min = Number($("zapMin").value) || 0;
+  const max = Number($("zapMax").value) || 0;
+  const spot = Number(pool.price) || 0;
+  if (max > 0 && max <= spot) note.textContent = "Catatan: seluruh range di bawah harga saat ini (" + fmtPrice(spot) + ").";
+  else if (min > 0 && min >= spot) note.textContent = "Catatan: seluruh range di atas harga saat ini (" + fmtPrice(spot) + ").";
+  else if (min > 0 && max > min) note.textContent = "Catatan: harga saat ini (" + fmtPrice(spot) + ") berada di dalam range.";
+  else note.textContent = "";
+}
+function updateZapSummary() {
+  const pool = copySelectedPool;
+  const box = $("zapSummary");
+  if (!pool) {
+    box.innerHTML = '<span class="muted">Pilih pool dulu.</span>';
+    return;
+  }
+  box.innerHTML =
+    "<div><span>Deposit</span><strong>" +
+    fmtMoney(Number($("zapAmount").value) || 0) +
+    " (" +
+    ($("zapMode").value === "zap" ? "Zap In" : "Kedua token") +
+    ")</strong></div>" +
+    "<div><span>Price range</span><strong>" +
+    fmtPrice(Number($("zapMin").value) || 0) +
+    " – " +
+    fmtPrice(Number($("zapMax").value) || 0) +
+    "</strong></div>" +
+    "<div><span>Current price</span><strong>" +
+    fmtPrice(pool.price) +
+    "</strong></div>" +
+    "<div><span>Slippage</span><strong>" +
+    (Number($("zapSlippage").value) || 0) +
+    "%</strong></div>" +
+    "<div><span>Pool</span><strong>" +
+    esc(pool.name) +
+    " · " +
+    esc(pool.chain) +
+    "</strong></div>";
+}
+async function zapOpen() {
+  const pool = copySelectedPool;
+  if (!pool) {
+    setMsg("zapMsg", "Pilih pool dulu dari daftar.", true);
+    return;
+  }
+  const amount = Number($("zapAmount").value) || 0;
+  const minPrice = Number($("zapMin").value) || 0;
+  const maxPrice = Number($("zapMax").value) || 0;
+  if (!(amount > 0)) {
+    setMsg("zapMsg", "Nominal harus lebih dari 0.", true);
+    return;
+  }
+  if (minPrice <= 0 || maxPrice <= minPrice) {
+    setMsg("zapMsg", "Range min/max tidak valid.", true);
+    return;
+  }
+  try {
+    const r = await postJson("/api/copylp/open", {
+      chain: pool.chain,
+      source: pool.source,
+      poolAddress: pool.poolAddress,
+      tokenAddress: pool.tokenAddress,
+      symbol: pool.baseSymbol,
+      name: pool.name,
+      price: pool.price,
+      amount,
+      minPrice,
+      maxPrice,
+      lowerBin: pool._range ? pool._range.lowerBin : null,
+      upperBin: pool._range ? pool._range.upperBin : null,
+      strategy: $("zapStrategy").value,
+      binStepBps: pool.binStep || 25,
+      pairUrl: pool.pairUrl || "",
+    });
+    setMsg("zapMsg", "Posisi Copy LP dibuka: " + r.position.symbol + " di " + r.position.chain + " sebesar " + fmtMoney(r.position.amount) + " (pool_address tersimpan).");
+    await loadState();
+    loadPoolPositions();
+  } catch (e) {
+    setMsg("zapMsg", e.friendly || e.message, true);
+  }
+}
+async function loadPoolPositions() {
+  const box = $("poolPositions");
+  const pool = copySelectedPool;
+  if (!pool) {
+    box.innerHTML = '<p class="muted">Pilih pool untuk melihat posisi desk di pool itu.</p>';
+    return;
+  }
+  try {
+    const data = await api("/api/copylp/pool-positions?pool=" + encodeURIComponent(pool.poolAddress));
+    const list = data.positions || [];
+    if (!list.length) {
+      box.innerHTML = '<p class="muted">Belum ada posisi desk di pool ini (status kosong — jujur, bukan data orang lain).</p>';
+      return;
+    }
+    box.innerHTML =
+      '<table class="mini-table"><thead><tr><th>Posisi</th><th>Value</th><th>Fee</th><th>uPnL</th><th>Age</th><th>Range</th><th>Status</th><th>Aksi</th></tr></thead><tbody>' +
+      list
+        .map(
+          (p) =>
+            "<tr><td>" +
+            esc(p.symbol) +
+            " #" +
+            esc(String(p.id).slice(-4)) +
+            '<br><span class="muted">' +
+            esc(p.status) +
+            "</span></td>" +
+            "<td>" +
+            fmtMoney(p.value) +
+            "</td><td>" +
+            fmtMoney((Number(p.fees) || 0) + (Number(p.rewards) || 0)) +
+            "</td>" +
+            '<td class="' +
+            (p.upnl >= 0 ? "pos" : "neg") +
+            '">' +
+            fmtMoney(p.upnl) +
+            "</td>" +
+            "<td>" +
+            p.ageHours +
+            " jam</td><td>" +
+            fmtPrice(p.minPrice) +
+            " – " +
+            fmtPrice(p.maxPrice) +
+            "</td>" +
+            "<td>" +
+            (p.status === "open" ?
+              p.inRange ?
+                '<span class="range-ok">IN</span>'
+              : '<span class="range-out">OUT</span>'
+            : "—") +
+            "</td>" +
+            "<td>" +
+            (p.status === "open" ?
+              '<button type="button" data-pp="claim" data-id="' +
+              p.id +
+              '">Claim</button> <button type="button" class="secondary" data-pp="rebalance" data-id="' +
+              p.id +
+              '">Rebalance</button> <button type="button" class="secondary" data-pp="close" data-id="' +
+              p.id +
+              '">Close</button>'
+            : "") +
+            "</td></tr>",
+        )
+        .join("") +
+      "</tbody></table>";
+    box.querySelectorAll("[data-pp]").forEach((b) => b.addEventListener("click", () => handlePositionAction(b.dataset.pp, b.dataset.id, b).then(loadPoolPositions)));
+  } catch (e) {
+    box.innerHTML = '<p class="muted">Gagal memuat posisi pool.</p>';
+  }
+}
+async function runCopyMonitor(quiet) {
+  copyMonitorStarted = true;
+  const out = $("copyMonitorOut");
+  if (quiet !== true) out.innerHTML = '<p class="muted">Memeriksa posisi Copy LP dari harga live…</p>';
+  try {
+    const r = await postJson("/api/copylp/monitor", {});
+    if (!r.positions.length) {
+      out.innerHTML = '<p class="muted">Tidak ada posisi Copy LP terbuka dengan pool_address.</p>';
+      return;
+    }
+    out.innerHTML =
+      "<p>Diperiksa: " +
+      r.checked +
+      " posisi · di luar range: " +
+      r.outOfRange +
+      "</p>" +
+      r.positions
+        .map(
+          (p) =>
+            '<div class="mon-row"><strong>' +
+            esc(p.symbol) +
+            '</strong> <span class="chain-badge">' +
+            esc(p.chain) +
+            "</span> harga live " +
+            fmtPrice(p.livePrice) +
+            " · range " +
+            fmtPrice(p.minPrice) +
+            " – " +
+            fmtPrice(p.maxPrice) +
+            " · " +
+            (p.inRange ? '<span class="range-ok">IN RANGE</span>' : '<span class="range-out">OUT OF RANGE</span>') +
+            '<br><span class="muted">' +
+            esc(p.suggestion) +
+            "</span> " +
+            '<button type="button" class="secondary" data-mon="rebalance" data-id="' +
+            p.id +
+            '">Rebalance</button> ' +
+            '<button type="button" class="secondary" data-mon="claim" data-id="' +
+            p.id +
+            '">Claim</button> ' +
+            '<button type="button" class="secondary" data-mon="close" data-id="' +
+            p.id +
+            '">Close</button></div>',
+        )
+        .join("");
+    out.querySelectorAll("[data-mon]").forEach((b) => b.addEventListener("click", () => handlePositionAction(b.dataset.mon, b.dataset.id, b).then(runCopyMonitor)));
+    await loadState();
+  } catch (e) {
+    out.innerHTML = '<p class="muted">Monitor gagal: ' + esc(e.friendly || e.message) + "</p>";
+  }
+}
+
+/* ---------------- Kopi — Copy Trading LP ---------------- */
+
+function sortedLeadersClient() {
+  const list = ((deskState && deskState.leaders) || []).slice();
+  return list.sort((a, b) => (Number(b.winrate) || 0) - (Number(a.winrate) || 0));
+}
+function renderLeaders() {
+  const list = sortedLeadersClient();
+  const box = $("leaderList");
+  const sel = $("kopiLeaderSelect");
+  const currentSel = settings.copyTrading.leaderId || "";
+  sel.innerHTML = '<option value="">Otomatis — peringkat #1</option>' + list.map((l) => '<option value="' + l.id + '"' + (currentSel === l.id ? " selected" : "") + ">" + esc(l.label) + " (" + l.winrate + "%)</option>").join("");
+  if (!list.length) {
+    box.innerHTML = '<p class="muted">Watchlist kosong. Tambahkan leader pertama lewat formulir di atas — data yang kamu masukkan sendiri dari Smart LP/platform lain (input manual, bukan data live).</p>';
+    return;
+  }
+  box.innerHTML = list
+    .map(
+      (l, i) =>
+        '<div class="leader-card"><div class="leader-top"><strong>' +
+        esc(l.label) +
+        "</strong>" +
+        (i === 0 ? '<span class="leader-badge">LEADER COPY</span>' : "") +
+        "</div>" +
+        '<div class="manual-note">input manual — bukan data live</div>' +
+        '<div class="leader-meta">Wallet: ' +
+        esc(l.wallet) +
+        "<br>Chain: " +
+        esc(l.chain) +
+        " · Platform: " +
+        esc(l.platform) +
+        " · Winrate: " +
+        l.winrate +
+        "% · Total PnL: " +
+        fmtMoney(l.totalPnl) +
+        " · Hold: " +
+        esc(l.holdTime || "—") +
+        " · Strategi: " +
+        esc(l.strategy) +
+        (l.favoriteToken ? "<br>Token favorit: " + esc(l.favoriteToken) : "") +
+        "</div>" +
+        '<div class="actions"><button type="button" class="secondary" data-leader-edit="' +
+        l.id +
+        '">Edit</button>' +
+        '<button type="button" class="secondary" data-leader-del="' +
+        l.id +
+        '">Hapus leader</button></div></div>',
+    )
+    .join("");
+  box.querySelectorAll("[data-leader-edit]").forEach((b) => b.addEventListener("click", () => fillLeaderForm(b.dataset.leaderEdit)));
+  box.querySelectorAll("[data-leader-del]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await postJson("/api/leaders/delete", { id: b.dataset.leaderDel });
+        await loadState();
+        renderLeaders();
+        setMsg("leaderMsg", "Leader dihapus.");
+      } catch (e) {
+        setMsg("leaderMsg", e.friendly || e.message, true);
+      }
+    }),
+  );
+}
+function fillLeaderForm(id) {
+  const l = ((deskState && deskState.leaders) || []).find((x) => x.id === id);
+  if (!l) return;
+  $("leaderId").value = l.id;
+  $("leaderLabel").value = l.label;
+  $("leaderWallet").value = l.wallet;
+  $("leaderChain").value = l.chain;
+  $("leaderPlatform").value = l.platform;
+  $("leaderWinrate").value = l.winrate;
+  $("leaderPnl").value = l.totalPnl;
+  $("leaderHold").value = l.holdTime || "";
+  $("leaderStrategy").value = l.strategy;
+  $("leaderFav").value = l.favoriteToken || "";
+  $("leaderCancelEditBtn").hidden = false;
+}
+function clearLeaderForm() {
+  $("leaderId").value = "";
+  $("leaderLabel").value = "";
+  $("leaderWallet").value = "";
+  $("leaderWinrate").value = "";
+  $("leaderPnl").value = "";
+  $("leaderHold").value = "";
+  $("leaderFav").value = "";
+  $("leaderCancelEditBtn").hidden = true;
+}
+async function saveLeader() {
+  const id = $("leaderId").value;
+  const body = {
+    label: $("leaderLabel").value.trim(),
+    wallet: $("leaderWallet").value.trim(),
+    chain: $("leaderChain").value,
+    platform: $("leaderPlatform").value.trim(),
+    winrate: Number($("leaderWinrate").value),
+    totalPnl: Number($("leaderPnl").value) || 0,
+    holdTime: $("leaderHold").value.trim(),
+    strategy: $("leaderStrategy").value,
+    favoriteToken: $("leaderFav").value.trim(),
+  };
+  try {
+    if (id) await postJson("/api/leaders/update", { id, ...body });
+    else await postJson("/api/leaders", body);
+    clearLeaderForm();
+    await loadState();
+    renderLeaders();
+    setMsg("leaderMsg", "Leader tersimpan (input manual — bukan data live).");
+  } catch (e) {
+    setMsg("leaderMsg", e.friendly || e.message, true);
+  }
+}
+function fillKopiForm() {
+  const ct = settings.copyTrading;
+  $("kopiEnabled").checked = !!ct.enabled;
+  $("kopiAmount").value = ct.amountPerCopy;
+  $("kopiMaxPos").value = ct.maxPositions;
+  $("kopiRange").value = ct.rangePreset;
+  $("kopiDailyLoss").value = ct.dailyLossLimit;
+  renderLeaders();
+  renderAgentLogs("kopiLogs", "Kopi");
+}
+function readKopiForm() {
+  const ct = settings.copyTrading;
+  ct.enabled = $("kopiEnabled").checked;
+  ct.leaderId = $("kopiLeaderSelect").value || null;
+  ct.amountPerCopy = Number($("kopiAmount").value) || 0;
+  ct.maxPositions = Number($("kopiMaxPos").value) || 0;
+  ct.rangePreset = $("kopiRange").value;
+  ct.dailyLossLimit = Number($("kopiDailyLoss").value) || 0;
+}
+async function runKopi() {
+  readKopiForm();
+  try {
+    await saveSettings();
+  } catch (e) {
+    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    return;
+  }
+  $("kopiRunOut").innerHTML = '<p class="muted">Kopi menjalankan copy (simulasi)…</p>';
+  try {
+    const r = await postJson("/api/agent/copy-trading", { action: "run" });
+    const lines = [];
+    if (r.leader) lines.push("Leader: <strong>" + esc(r.leader.label) + "</strong> (winrate " + r.leader.winrate + "%)");
+    (r.opened || []).forEach((o) => lines.push("Dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price)));
+    (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(s.symbol) + " — " + esc(s.reason)));
+    $("kopiRunOut").innerHTML = "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>";
+    await loadState();
+    renderLeaders();
+    renderAgentLogs("kopiLogs", "Kopi");
+  } catch (e) {
+    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+  }
+}
+async function runNara() {
+  readNaraForm();
+  try {
+    await saveSettings();
+  } catch (e) {
+    $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    return;
+  }
+  $("naraRunOut").innerHTML = '<p class="muted">Nara memindai Top 10 agent API…</p>';
+  try {
+    const r = await postJson("/api/agent/auto-trading", { action: "run" });
+    const lines = [];
+    if (r.stoppedByDailyLoss) lines.push("Berhenti: batas kerugian harian tercapai (PnL hari ini " + fmtMoney(r.todayPnl) + ").");
+    (r.opened || []).forEach((o) => lines.push("Dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price)));
+    (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(s.symbol) + " — " + esc(s.reason)));
+    $("naraRunOut").innerHTML = "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>";
+    await loadState();
+    renderAgentLogs("naraLogs", "Nara");
+  } catch (e) {
+    $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+  }
+}
+
+/* ---------------- Nara: jalan otomatis tiap 5 menit ----------------
+   Hanya berjalan bila Auto Trading LP aktif. Tidak membaca ulang form agar
+   nilai yang sedang diedit pengguna tidak tertimpa. */
+
+const NARA_INTERVAL_MS = 5 * 60 * 1000;
+let naraTimer = null;
+let naraBusy = false;
+
+async function naraAutoTick() {
+  if (naraBusy || !settings || !settings.autoTrading.enabled) return;
+  naraBusy = true;
+  try {
+    const r = await postJson("/api/agent/auto-trading", { action: "run" });
+    if ((r.opened || []).length) showToast("Nara membuka " + r.opened.length + " LP baru.");
+    if (!liveGuardBlocked()) await loadState();
+    renderAgentLogs("naraLogs", "Nara");
+  } catch (_) {
+    /* error tercatat di log agent oleh server */
+  } finally {
+    naraBusy = false;
+  }
+}
+
+function startNaraSchedule() {
+  if (naraTimer) clearInterval(naraTimer);
+  naraTimer = setInterval(naraAutoTick, NARA_INTERVAL_MS);
+}
+
+/* ---------------- Tabs, modals, init ---------------- */
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
+  if (name === "monthly") {
+    renderMonthly();
+    renderCardPreview();
+  }
+  if (name === "toplp" && !candidatesData) loadCandidates(false);
+}
+function openAgentModal(name) {
+  if (name === "nara") {
+    fillNaraForm();
+    $("naraModal").hidden = false;
+  }
+  if (name === "byte") {
+    fillByteForm();
+    $("byteModal").hidden = false;
+  }
+  if (name === "sora") {
+    renderSora();
+    $("soraModal").hidden = false;
+  }
+  if (name === "kopi") {
+    fillKopiForm();
+    $("kopiModal").hidden = false;
+  }
+}
+function fillChainSelects() {
+  $("lpChain").innerHTML = '<option value="AUTO">Auto (deteksi dari pair)</option>' + CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
+  $("naraChain").innerHTML = '<option value="ALL">Semua</option>' + CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
+  $("tradeChain").innerHTML = CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
+  $("leaderChain").innerHTML = CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
+  $("discChain").innerHTML = '<option value="ALL">Semua</option>' + CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
+}
+function init() {
+  if (location.protocol === "file:") $("fileWarning").hidden = false;
+  fillChainSelects();
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  document.querySelectorAll("[data-agent]").forEach((el) => el.addEventListener("click", () => openAgentModal(el.dataset.agent)));
+  document.querySelectorAll(".modal-close").forEach((b) =>
+    b.addEventListener("click", () => {
+      $(b.dataset.close).hidden = true;
+    }),
+  );
+  document.querySelectorAll(".modal").forEach((m) =>
+    m.addEventListener("click", (e) => {
+      if (e.target === m) m.hidden = true;
+    }),
+  );
+
+  $("lpSearchBtn").addEventListener("click", searchLpTokens);
+  $("lpOpenBtn").addEventListener("click", openLp);
+  const doRefreshSimulation = async () => {
+    try {
+      const r = await postJson("/api/lp/refresh", {});
+      setMsg("lpMsg", "Refresh selesai. Fee terakru (simulasi): " + fmtMoney(r.accrued) + " — tercatat di ledger Monthly Profit.");
+      await loadState();
+    } catch (e) {
+      setMsg("lpMsg", e.friendly || e.message, true);
+    }
+  };
+  $("lpRefreshBtn").addEventListener("click", doRefreshSimulation);
+  // Hero: navigasi cepat + refresh simulasi (alur yang sama dengan panel).
+  $("heroRefreshBtn").addEventListener("click", doRefreshSimulation);
+  $("heroCopyBtn").addEventListener("click", () => switchTab("copylp"));
+  $("heroTopBtn").addEventListener("click", () => switchTab("toplp"));
+  $("heroOpenBtn").addEventListener("click", () => {
+    switchTab("desk");
+    $("openLpPanel").scrollIntoView();
+  });
+  // Open LP: kontrol segmented gaya hosted (preset range / strategi / side).
+  document.querySelectorAll("#lpPresetSeg [data-preset]").forEach((b) => b.addEventListener("click", () => applyLpPreset(b.dataset.preset)));
+  ["lpMinPct", "lpMaxPct"].forEach((id) =>
+    $(id).addEventListener("input", () => {
+      if (lpPreset !== "custom") applyLpPreset("custom");
+    }),
+  );
+  document.querySelectorAll("#lpStrategySeg [data-strategy]").forEach((b) =>
+    b.addEventListener("click", () => {
+      lpStrategyVal = b.dataset.strategy;
+      document.querySelectorAll("#lpStrategySeg [data-strategy]").forEach((x) => x.classList.toggle("active", x === b));
+    }),
+  );
+  document.querySelectorAll("#lpSideSeg [data-side]").forEach((b) =>
+    b.addEventListener("click", () => {
+      lpSideVal = b.dataset.side;
+      document.querySelectorAll("#lpSideSeg [data-side]").forEach((x) => x.classList.toggle("active", x === b));
+    }),
+  );
+  $("lpDistribution").addEventListener("change", updateDistBar);
+  updateDistBar();
+  // Range book: filter kategori Open/Closed/Leftover.
+  document.querySelectorAll("#posFilterSeg [data-pfilter]").forEach((b) =>
+    b.addEventListener("click", () => {
+      posStatusFilter = b.dataset.pfilter;
+      renderPositions();
+    }),
+  );
+  // Card Studio (di tab Monthly): tombol dashed memicu input file tersembunyi.
+  $("bgPickImageBtn").addEventListener("click", () => $("bgImageInput").click());
+  $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());
+  $("downloadCardBtnTop").addEventListener("click", () => {
+    downloadCard().catch((e) => setMsg("cardMsg", e.message, true));
+  });
+  $("tradeBuyBtn").addEventListener("click", () => doTrade("buy"));
+  $("tradeSellBtn").addEventListener("click", () => doTrade("sell"));
+
+  $("rtToggle").addEventListener("change", () => {
+    rtPaused = !$("rtToggle").checked;
+    $("rtToggleLabel").textContent = rtPaused ? "Realtime OFF" : "Realtime ON";
+    if (!rtPaused) liveTick(true);
+  });
+  $("rtNowBtn").addEventListener("click", () => liveTick(true));
+  // Strip statistik: toggle Auto TP/SL memakai jalur simpan settings yang
+  // sama dengan modal Byte.
+  $("stripTpSlToggle").addEventListener("change", async () => {
+    settings.tpSl.armed = $("stripTpSlToggle").checked;
+    try {
+      await saveSettings();
+    } catch (e) {
+      showToast(e.friendly || e.message, true);
+    }
+    renderTpSlStrip();
+  });
+
+  $("monthPrev").addEventListener("click", () => {
+    shiftMonth(-1);
+  });
+  $("monthNext").addEventListener("click", () => {
+    shiftMonth(1);
+  });
+  $("monthToday").addEventListener("click", () => {
+    currentMonth = new Date().toISOString().slice(0, 7);
+    renderMonthly();
+    if ($("tab-monthly").classList.contains("active")) renderCardPreview();
+  });
+
+  $("bgImageInput").addEventListener("change", () => {
+    const f = $("bgImageInput").files[0];
+    if (!f) return;
+    clearBgMedia();
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      cardBg = { type: "image", img, video: null, name: f.name, objectUrl: url };
+      setBgInfo();
+      renderCardPreview();
+    };
+    img.src = url;
+  });
+  $("bgVideoInput").addEventListener("change", () => {
+    const f = $("bgVideoInput").files[0];
+    if (!f) return;
+    clearBgMedia();
+    const url = URL.createObjectURL(f);
+    const video = $("bgVideoPreview");
+    video.src = url;
+    video.onloadeddata = () => {
+      cardBg = { type: "video", img: null, video, name: f.name, objectUrl: url };
+      setBgInfo();
+      renderCardPreview();
+      startVideoPreviewLoop();
+    };
+  });
+  $("bgRemoveBtn").addEventListener("click", () => {
+    clearBgMedia();
+    cardBg = { type: null, img: null, video: null, name: "", objectUrl: "" };
+    $("bgImageInput").value = "";
+    $("bgVideoInput").value = "";
+    setBgInfo();
+    renderCardPreview();
+  });
+  $("bgPlayBtn").addEventListener("click", () => {
+    const v = cardBg.video || $("bgVideoPreview");
+    if (!v) return;
+    if (v.paused) {
+      v.play();
+    } else {
+      v.pause();
+    }
+  });
+  $("bgBrightness").addEventListener("input", () => {
+    $("brightnessVal").textContent = $("bgBrightness").value + "%";
+    renderCardPreview();
+  });
+  $("downloadCardBtn").addEventListener("click", () => {
+    downloadCard().catch((e) => setMsg("cardMsg", e.message, true));
+  });
+
+  // Discover controls
+  document.querySelectorAll(".disc-tab").forEach((b) =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".disc-tab").forEach((x) => x.classList.toggle("active", x === b));
+      discoverState.tab = b.dataset.dtab;
+      renderDiscover();
+    }),
+  );
+  document.querySelectorAll(".disc-tf-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".disc-tf-btn").forEach((x) => x.classList.toggle("active", x === b));
+      discoverState.tf = b.dataset.tf;
+      renderDiscover();
+    }),
+  );
+  $("discHideRisky").addEventListener("change", () => {
+    discoverState.hideRisky = $("discHideRisky").checked;
+    renderDiscover();
+  });
+  $("discChain").addEventListener("change", () => {
+    discoverState.chain = $("discChain").value;
+    renderDiscover();
+  });
+  $("discRefreshBtn").addEventListener("click", () => loadCandidates(true));
+
+  // Copy LP
+  $("copyDiscoverBtn").addEventListener("click", discoverCopyLp);
+  $("zapStrategy").addEventListener("change", () => applyZapRange("auto"));
+  document.querySelectorAll(".zap-preset").forEach((b) => b.addEventListener("click", () => applyZapRange(b.dataset.preset)));
+  document.querySelectorAll(".step-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      const input = $(b.dataset.target);
+      const v = Number(input.value) || 0;
+      if (v > 0) {
+        input.value = fmtPrice(v * (1 + Number(b.dataset.dir) * 0.01));
+        updateZapNote();
+        updateZapSummary();
+      }
+    }),
+  );
+  ["zapMin", "zapMax"].forEach((id) =>
+    $(id).addEventListener("input", () => {
+      updateZapNote();
+      updateZapSummary();
+    }),
+  );
+  ["zapAmount", "zapSlippage"].forEach((id) => $(id).addEventListener("input", updateZapSummary));
+  $("zapMode").addEventListener("change", updateZapSummary);
+  $("zapOpenBtn").addEventListener("click", zapOpen);
+  $("copyMonitorBtn").addEventListener("click", () => runCopyMonitor(false));
+
+  // Agents
+  $("naraSaveBtn").addEventListener("click", async () => {
+    readNaraForm();
+    try {
+      await saveSettings();
+      showToast("Pengaturan Nara tersimpan.");
+      fillNaraForm();
+    } catch (e) {
+      showToast(e.friendly || e.message, true);
+    }
+  });
+  $("naraRunBtn").addEventListener("click", runNara);
+  $("byteSaveBtn").addEventListener("click", async () => {
+    settings.tpSl.armed = $("byteArmed").checked;
+    settings.tpSl.defaultTpPct = Number($("byteTp").value) || 0;
+    settings.tpSl.defaultSlPct = Number($("byteSl").value) || 0;
+    try {
+      await saveSettings();
+      showToast("Pengaturan Byte tersimpan.");
+      fillByteForm();
+    } catch (e) {
+      showToast(e.friendly || e.message, true);
+    }
+  });
+  $("byteCheckBtn").addEventListener("click", async () => {
+    try {
+      const r = await postJson("/api/agent/tp-sl-check", {});
+      $("byteCheckOut").textContent = "Diperiksa " + r.checked + " posisi ber-SL/TP; ditutup: " + (r.closed.length ? r.closed.map((c) => c.symbol + " (" + c.reason + ")").join(", ") : "tidak ada") + ".";
+      await loadState();
+      renderByteChart();
+    } catch (e) {
+      $("byteCheckOut").textContent = e.friendly || e.message;
+    }
+  });
+  $("leaderSaveBtn").addEventListener("click", saveLeader);
+  $("leaderCancelEditBtn").addEventListener("click", clearLeaderForm);
+  $("kopiSaveBtn").addEventListener("click", async () => {
+    readKopiForm();
+    try {
+      await saveSettings();
+      showToast("Pengaturan Kopi tersimpan.");
+      fillKopiForm();
+    } catch (e) {
+      showToast(e.friendly || e.message, true);
+    }
+  });
+  $("kopiRunBtn").addEventListener("click", runKopi);
+  $("ddSaveBtn").addEventListener("click", saveDd);
+
+  $("resetDemoBtn").addEventListener("click", async () => {
+    try {
+      await postJson("/api/reset", {});
+      selectedToken = null;
+      showToast("Demo direset ke keadaan default bersih.");
+      await loadState();
+      renderMonthly();
+    } catch (e) {
+      showToast(e.friendly || e.message, true);
+    }
+  });
+
+  loadState()
+    .then(() => {
+      refreshRealtime();
+      startRealtime();
+      startNaraSchedule();
+    })
+    .catch((e) => showToast("Gagal memuat state: " + e.message, true));
+}
+function clearBgMedia() {
+  const v = $("bgVideoPreview");
+  try {
+    v.pause();
+  } catch (_) {
+    /* abaikan */
+  }
+  v.removeAttribute("src");
+  v.load();
+}
+function shiftMonth(delta) {
+  const [y, m] = currentMonth.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  currentMonth = d.toISOString().slice(0, 7);
+  renderMonthly();
+}
+document.addEventListener("DOMContentLoaded", init);

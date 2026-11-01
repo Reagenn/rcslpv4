@@ -1,0 +1,20 @@
+{
+  "area": "LP Desk simulated position valuation and capital",
+  "serverJs": "backend/src/server.js",
+  "serverJsSha256": "02517b6b04f96cde5703ec95fd92978330e4bd5ec02bc3c70c555dc3a8cf9032",
+  "syncCommit": null,
+  "syncCommitNote": "This checkout has no git metadata. The fingerprint is SHA-256 of backend/src/server.js. Move serverJsSha256 forward only after confirming the properties still describe the listed functions.",
+  "functions": {
+    "uid": { "line": 39, "endLine": 41 },
+    "todayISO": { "line": 42, "endLine": 45 },
+    "roundPrice": { "line": 51, "endLine": 58 },
+    "round2": { "line": 59, "endLine": 61 },
+    "defaultSettings": { "line": 63, "endLine": 73 },
+    "defaultState": { "line": 75, "endLine": 93 },
+    "openPositionInternal": { "line": 164, "endLine": 216 },
+    "closePositionInternal": { "line": 218, "endLine": 250 },
+    "distributionWeights": { "line": 982, "endLine": 989 },
+    "valuePosition": { "line": 1016, "endLine": 1052 },
+    "evaluateTpSlOnFreshPrices": { "line": 1148, "endLine": 1167 }
+  }
+}

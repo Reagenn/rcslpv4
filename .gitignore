@@ -1,0 +1,13 @@
+# Dependencies (none at runtime, but keep the tree clean)
+node_modules/
+
+# OS / editor artefacts
+.DS_Store
+Thumbs.db
+*.log
+
+# Isolated verification instance (keep evidence/)
+.cursor/skills/verify-lp-desk/run/
+
+# Runtime state (posisi, PnL, settings pribadi)
+backend/data/data.json

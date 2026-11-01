@@ -1,0 +1,1 @@
+{"description":"LP Desk local backend v4 (simulation only) — plain Node http, no dependencies","main":"src/server.js","name":"lp-desk-backend-v4","private":true,"scripts":{"start":"node src/server.js"},"version":"4.0.0"}

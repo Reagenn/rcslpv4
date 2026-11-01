@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LP Desk — Demo Simulasi Multi-Chain (Lokal v4)</title>
+    <link rel="stylesheet" href="assets/css/styles.css" />
+  </head>
+  <body>
+    <div id="fileWarning" class="file-warning" hidden>
+      <strong>⚠ File ini dibuka langsung dari disk (file://) — aplikasi TIDAK akan bekerja.</strong>
+      Jalankan lewat server lokal: buka terminal di folder proyek ini, jalankan <code>npm install</code> lalu <code>npm start</code>, kemudian buka <code>http://localhost:3000</code> di browser.
+    </div>
+    <main class="app">
+      <!-- ============ HEADER + HERO ============ -->
+      <header class="hero">
+        <div class="hero-left">
+          <p class="eyebrow">MULTI-CHAIN · DEX SCREENER DATA</p>
+          <h1>Liquidity operations,<br /><span class="accent-text">one desk.</span></h1>
+          <p class="muted hero-sub">
+            Satu desk untuk semua operasi LP multi-chainmu — cari token, buka LP, pantau fee &amp; PnL secara realtime, dan biarkan Agent Crew bekerja. Demo simulasi versi lokal v4: tanpa wallet asli, tanpa dana nyata, tanpa transaksi
+            on-chain.
+          </p>
+          <p class="muted"><button id="resetDemoBtn" class="linkish" type="button">Reset demo ke keadaan default</button></p>
+        </div>
+        <div class="hero-actions">
+          <button id="heroCopyBtn" class="hero-btn" type="button"><span class="hero-chip">⧉</span> Copy LP</button>
+          <button id="heroTopBtn" class="hero-btn" type="button"><span class="hero-chip">▦</span> Top LP candidates</button>
+          <button id="heroOpenBtn" class="hero-btn primary" type="button">+ Open LP</button>
+          <button id="heroRefreshBtn" class="hero-btn" type="button"><span class="hero-chip">↻</span> Refresh simulation</button>
+        </div>
+      </header>
+      <nav class="tabs">
+        <button class="tab active" data-tab="desk" type="button">Desk</button>
+        <button class="tab" data-tab="copylp" type="button">Copy LP</button>
+        <button class="tab" data-tab="monthly" type="button">Monthly Profit</button>
+        <button class="tab" data-tab="toplp" type="button">Top LP</button>
+      </nav>
+
+      <!-- ============ TAB: DESK ============ -->
+      <section id="tab-desk" class="tab-panel active">
+        <div id="toast" class="toast" hidden></div>
+
+        <!-- CHAIN BAR -->
+        <section class="chain-bar-wrap">
+          <div id="chainBar" class="chain-bar"></div>
+        </section>
+
+        <!-- PANEL LIVE -->
+        <section class="panel" id="realtimePanel">
+          <div class="rt-head">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span class="rt-title">LIVE · PORTFOLIO REALTIME</span>
+          </div>
+          <p class="muted">
+            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Tetap simulasi — tanpa wallet/dana nyata. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
+            Profit + Card Studio, Copy LP, Top LP dari cache server — scan sumber maks. tiap 5 menit agar tidak kena batas API publik). Refresh dilewati sesaat bila ada modal terbuka, kamu sedang mengetik, konfirmasi hapus tampil, atau
+            detail Discover terbuka.
+          </p>
+          <div class="rt-grid">
+            <div><span>TERAKHIR LIVE</span><strong id="rtUpdated" class="num">—</strong></div>
+            <div>
+              <span>SISA / TERALOKASI</span><strong class="num"><span id="rtFreeCapital">—</span> / <span id="rtAllocated">—</span></strong>
+            </div>
+            <div><span>FEE BISA DIKLAIM</span><strong id="rtClaimable" class="num">—</strong></div>
+            <div><span>UPDATE BERIKUTNYA</span><strong id="rtStatus" class="num">—</strong></div>
+          </div>
+          <div class="rt-controls">
+            <label class="switch-wrap"
+              ><span class="switch"><input type="checkbox" id="rtToggle" checked /><span class="slider"></span></span><span id="rtToggleLabel">Realtime ON</span></label
+            >
+            <span class="rt-pill">Interval tetap · 5 dtk</span>
+            <button id="rtNowBtn" type="button">Perbarui sekarang</button>
+          </div>
+          <div id="rtTicker" class="rt-ticker"></div>
+          <p id="rtClosed" class="muted"></p>
+          <p id="rtMsg" class="muted"></p>
+        </section>
+
+        <!-- STRIP STATISTIK -->
+        <section class="panel stats-strip">
+          <div class="strip-col strip-accent">
+            <span class="strip-label">DESK NET PNL VS HOLDING</span>
+            <div class="strip-value-row"><strong id="stripNetPnl" class="num">—</strong><span id="stripNetPnlPct" class="strip-pct pos">—</span></div>
+            <p class="muted">LP value + earned/claimed fees + rewards − hold benchmark</p>
+          </div>
+          <div class="strip-col">
+            <span class="strip-label">PORTFOLIO REALTIME <span class="live-dot small" aria-hidden="true"></span></span>
+            <div class="strip-value-row"><strong id="rtValue" class="num">—</strong><span class="unit">USDC</span></div>
+            <p class="muted">Modal dasar $5,000.00 <span id="rtPnl">—</span> · diperbarui <span id="stripUpdated">—</span></p>
+          </div>
+          <div class="strip-col strip-tpsl">
+            <span class="strip-label">AUTO TP / SL</span>
+            <div class="strip-value-row"><strong id="stripTpSlState">—</strong></div>
+            <label class="switch-wrap"
+              ><span class="switch orange"><input type="checkbox" id="stripTpSlToggle" /><span class="slider"></span></span
+            ></label>
+          </div>
+        </section>
+
+        <!-- SALDO -->
+        <section class="panel" id="balancesPanel">
+          <p class="eyebrow">SIMULATED BALANCES</p>
+          <h2>Saldo per Chain</h2>
+          <p class="muted">Saldo USDC simulasi per chain + kepemilikan token dari buy/sell simulasi. State tersimpan persisten di backend (<code>backend/data/data.json</code>).</p>
+          <div id="balanceGrid" class="balance-grid"></div>
+          <div class="trade-box">
+            <h3>Buy / Sell Simulasi</h3>
+            <div class="two">
+              <label
+                >Chain
+                <select id="tradeChain"></select>
+              </label>
+              <label
+                >Alamat token
+                <input id="tradeAddress" placeholder="Tempel alamat token" />
+              </label>
+            </div>
+            <div class="three">
+              <label
+                >Simbol
+                <input id="tradeSymbol" placeholder="TOKEN" />
+              </label>
+              <label
+                >Nominal (USDC)
+                <input id="tradeAmount" type="number" min="0" step="any" value="50" />
+              </label>
+              <label
+                >Harga (USDC)
+                <input id="tradePrice" type="number" min="0" step="any" placeholder="Harga saat ini" />
+              </label>
+            </div>
+            <div class="actions">
+              <button id="tradeBuyBtn" type="button">Buy simulasi</button>
+              <button id="tradeSellBtn" class="secondary" type="button">Sell simulasi</button>
+            </div>
+            <p id="tradeMsg" class="muted"></p>
+          </div>
+          <h3>Riwayat Transaksi Simulasi</h3>
+          <div id="txList" class="tx-list"></div>
+        </section>
+
+        <!-- AGENT CREW -->
+        <section class="panel" id="crewPanel">
+          <div class="crew-layout">
+            <div class="crew-left">
+              <div class="dock-scene" id="dockScene" aria-hidden="true">
+                <div class="cloud c1"></div>
+                <div class="cloud c2"></div>
+                <div class="cloud c3"></div>
+                <div class="water"><span class="ripple r1"></span><span class="ripple r2"></span><span class="ripple r3"></span></div>
+                <div class="dock"></div>
+                <div class="crew-slot slot-left" data-agent="byte">
+                  <span class="crew-badge" id="badge-byte">BERHENTI</span>
+                  <div class="char dino-blue" id="char-byte"><span class="eye e1"></span><span class="eye e2"></span><span class="belly"></span><span class="spike s1"></span><span class="spike s2"></span><span class="spike s3"></span></div>
+                  <span class="crew-name">Byte</span>
+                </div>
+                <div class="crew-slot slot-center" data-agent="nara">
+                  <span class="crew-badge" id="badge-nara">BERHENTI</span>
+                  <div class="char penguin" id="char-nara"><span class="eye e1"></span><span class="eye e2"></span><span class="belly"></span><span class="beak"></span><span class="foot f1"></span><span class="foot f2"></span></div>
+                  <span class="crew-name">Nara</span>
+                </div>
+                <div class="crew-slot slot-right2" data-agent="kopi">
+                  <span class="crew-badge" id="badge-kopi">BERHENTI</span>
+                  <div class="char fox" id="char-kopi">
+                    <span class="ear ea1"></span><span class="ear ea2"></span><span class="eye e1"></span><span class="eye e2"></span><span class="muzzle"></span><span class="nose"></span><span class="tail"></span>
+                  </div>
+                  <span class="crew-name">Kopi</span>
+                </div>
+                <div class="crew-slot slot-right" data-agent="sora">
+                  <span class="crew-badge" id="badge-sora">BERJALAN</span>
+                  <div class="char dino-pink" id="char-sora"><span class="eye e1"></span><span class="eye e2"></span><span class="belly"></span><span class="spike s1"></span><span class="spike s2"></span><span class="spike s3"></span></div>
+                  <span class="crew-name">Sora</span>
+                </div>
+              </div>
+              <div class="crew-chips">
+                <button class="crew-chip" id="chip-byte" data-agent="byte" type="button">Byte · TP/SL</button>
+                <button class="crew-chip" id="chip-nara" data-agent="nara" type="button">Nara · Auto Trading LP</button>
+                <button class="crew-chip" id="chip-kopi" data-agent="kopi" type="button">Kopi · Copy Trading</button>
+                <button class="crew-chip" id="chip-sora" data-agent="sora" type="button">Sora · Analis</button>
+              </div>
+            </div>
+            <div class="crew-right">
+              <p class="eyebrow">AGENT CREW · SIMULASI</p>
+              <h2>Empat agent, empat tugas</h2>
+              <p class="muted">
+                Badge di atas tiap karakter menunjukkan statusnya: titik hijau “BERJALAN” saat agent aktif, titik merah “BERHENTI” saat nonaktif. Klik karakter atau kartunya untuk membuka pengaturan. Semua eksekusi tetap simulasi — tidak
+                ada wallet atau dana nyata.
+              </p>
+              <div class="crew-grid">
+                <button class="crew-card" data-agent="nara" type="button">
+                  <span class="crew-card-top"
+                    ><strong>Nara</strong><span class="crew-status"><span class="status-dot" id="dot-nara"></span><span id="crewStatus-nara">NONAKTIF</span></span></span
+                  >
+                  <span class="crew-role">Auto Trading LP</span>
+                  <span class="crew-desc">Memindai Top 10 kandidat agent, lalu membuka posisi LP simulasi sendiri untuk token yang lolos skor &amp; verdict.</span>
+                  <span class="crew-link">Atur agent →</span>
+                </button>
+                <button class="crew-card" data-agent="byte" type="button">
+                  <span class="crew-card-top"
+                    ><strong>Byte</strong><span class="crew-status"><span class="status-dot" id="dot-byte"></span><span id="crewStatus-byte">PAUSED</span></span></span
+                  >
+                  <span class="crew-role">Auto TP / SL Guard</span>
+                  <span class="crew-desc">Menjaga semua posisi terbuka — menutup otomatis saat harga menyentuh take-profit atau stop-loss.</span>
+                  <span class="crew-link">Atur agent →</span>
+                </button>
+                <button class="crew-card" data-agent="sora" type="button">
+                  <span class="crew-card-top"
+                    ><strong>Sora</strong><span class="crew-status"><span class="status-dot" id="dot-sora"></span><span id="crewStatus-sora">SIAP ANALISIS</span></span></span
+                  >
+                  <span class="crew-role">Portfolio Analyst</span>
+                  <span class="crew-desc">Menganalisis alokasi modal, PnL, konsentrasi chain, kesehatan range, dan memberi rekomendasi tindakan.</span>
+                  <span class="crew-link">Lihat analisis →</span>
+                </button>
+                <button class="crew-card" data-agent="kopi" type="button">
+                  <span class="crew-card-top"
+                    ><strong>Kopi</strong><span class="crew-status"><span class="status-dot" id="dot-kopi"></span><span id="crewStatus-kopi">NONAKTIF</span></span></span
+                  >
+                  <span class="crew-role">Copy Trading LP</span>
+                  <span class="crew-desc">Meniru profil strategi leader asli pilihanmu dari watchlist manual (winrate tertinggi) — membuka posisi LP simulasi mengikuti chain, strategi &amp; token favorit leader.</span>
+                  <span class="crew-link">Atur leader &amp; copy →</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <h3 class="activity-title">AKTIVITAS AGENT TERBARU</h3>
+          <div id="agentActivity" class="agent-activity"></div>
+        </section>
+
+        <!-- OPEN LP -->
+        <section class="panel accent-left" id="openLpPanel">
+          <p class="eyebrow">DEX SCREENER TOKEN · SIMULATED LP</p>
+          <h2>Open LP</h2>
+          <p class="muted">
+            Cari token dari DEX Screener, atur range &amp; distribusi, lalu buka posisi LP simulasi. Tempel alamat token lalu tekan <strong>Open simulated LP</strong> — terminal mencari sendiri dan memilih pair likuiditas tertinggi
+            (auto-pilot). Pair dari chain di luar 7 chain didukung akan ditolak dengan pesan jelas.
+          </p>
+          <div class="seg-row">
+            <span class="seg-label">Range preset</span>
+            <div class="seg" id="lpPresetSeg">
+              <button type="button" data-preset="tight">Tight</button>
+              <button type="button" data-preset="wide" class="active">Wide</button>
+              <button type="button" data-preset="custom">Custom</button>
+            </div>
+          </div>
+          <div class="seg-row">
+            <span class="seg-label">Distribusi liquidity</span>
+            <div class="seg" id="lpStrategySeg">
+              <button type="button" data-strategy="Spot" class="active">Spot</button>
+              <button type="button" data-strategy="Curve">Curve</button>
+              <button type="button" data-strategy="Bid-Ask">Bid-Ask</button>
+            </div>
+            <label class="inline-label"
+              >Bin step (bps)
+              <select id="lpBinStep">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+          <div class="three">
+            <label
+              >Chain
+              <select id="lpChain"></select>
+            </label>
+            <label
+              >Pair dari DEX Screener
+              <span id="lpPairInfo" class="pair-info">—</span>
+            </label>
+            <label
+              >Amount (USD)
+              <input id="lpAmount" type="number" min="0" step="any" value="100" />
+            </label>
+          </div>
+          <div class="search-row">
+            <input id="lpSearchInput" class="mono" placeholder="Cari token / tempel alamat token" />
+            <button id="lpSearchBtn" type="button">Cari token</button>
+          </div>
+          <p id="lpSelectedInfo" class="muted">Belum ada token dipilih.</p>
+          <div id="lpSearchResults" class="results"></div>
+          <div class="seg-row">
+            <span class="seg-label">Side</span>
+            <div class="seg" id="lpSideSeg">
+              <button type="button" data-side="Quote">Single</button>
+              <button type="button" data-side="Both" class="active">Double</button>
+              <button type="button" data-side="Token">Token</button>
+            </div>
+            <label class="inline-label"
+              >Quote
+              <select id="lpQuote">
+                <option>USDC</option>
+                <option>USDT</option>
+                <option>SOL</option>
+                <option>ETH</option>
+              </select>
+            </label>
+          </div>
+          <div class="four">
+            <label
+              >Min %
+              <input id="lpMinPct" type="number" step="any" value="-20" />
+            </label>
+            <label
+              >Max %
+              <input id="lpMaxPct" type="number" step="any" value="20" />
+            </label>
+            <label
+              >Stop loss %
+              <input id="lpSl" type="number" step="any" placeholder="-28" />
+            </label>
+            <label
+              >Take profit %
+              <input id="lpTp" type="number" step="any" placeholder="22" />
+            </label>
+          </div>
+          <div class="dist-wrap">
+            <div class="dist-bar"><span id="distBarQuote" class="dist-quote" style="width: 50%"></span><span id="distBarToken" class="dist-token" style="width: 50%"></span></div>
+            <div class="row-between">
+              <span id="distLabel" class="dist-label">50% QUOTE · 50% TOKEN</span>
+              <label class="inline-label"
+                >Distribusi aset
+                <select id="lpDistribution">
+                  <option>50/50</option>
+                  <option>70/30</option>
+                  <option>30/70</option>
+                  <option>100/0</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="actions right">
+            <button id="lpRefreshBtn" class="secondary" type="button">Refresh harga + akrual fee (simulasi)</button>
+            <button id="lpOpenBtn" class="primary big" type="button">Open simulated LP</button>
+          </div>
+          <p id="lpMsg" class="muted"></p>
+        </section>
+
+        <!-- HOLDING -->
+        <section class="panel" id="holdingPanel">
+          <p class="eyebrow">BENCHMARK</p>
+          <h2>Desk Net PnL vs Holding</h2>
+          <p class="muted">Net PnL posisi LP (nilai + fee + reward) dibandingkan benchmark hanya memegang aset sesuai distribusi awal. Selisih negatif ≈ impermanent loss.</p>
+          <div id="holdingSummary" class="holding-summary"></div>
+          <div id="binsPreview" class="bins-preview"></div>
+        </section>
+
+        <!-- POSISI / RANGE BOOK -->
+        <section class="panel" id="positionsPanel">
+          <div class="row-between">
+            <div>
+              <p class="eyebrow">POSITIONS</p>
+              <h2>Range book</h2>
+            </div>
+            <div class="seg" id="posFilterSeg">
+              <button type="button" data-pfilter="open" class="active">Open <span id="posCountOpen" class="num">0</span></button>
+              <button type="button" data-pfilter="closed">Closed <span id="posCountClosed" class="num">0</span></button>
+              <button type="button" data-pfilter="leftover">Leftover <span id="posCountLeftover" class="num">0</span></button>
+            </div>
+          </div>
+          <p id="positionsCount" class="muted"></p>
+          <div id="positionsList" class="positions"></div>
+        </section>
+      </section>
+
+      <!-- ============ TAB: COPY LP ============ -->
+      <section id="tab-copylp" class="tab-panel">
+        <section class="panel">
+          <p class="eyebrow">COPY LP · SEMUA CHAIN</p>
+          <h2>Copy LP — Penemuan Pool Semua Chain</h2>
+          <p class="muted">
+            Tempel CA token apa pun: pool Solana dari <strong>Meteora DLMM Data API</strong> (harga, base + dynamic fee, bin step, TVL, volume, fee 24j, APR) dan pool chain lain dari <strong>DexScreener</strong>. Fee yang tidak
+            dipublikasikan sumber tampil kosong — tidak ditebak. Semua posisi tetap simulasi.
+          </p>
+          <div class="two">
+            <label
+              >Contract Address (CA) token
+              <input id="copyCaInput" placeholder="Tempel CA token di sini" />
+            </label>
+            <label
+              >&nbsp;
+              <button id="copyDiscoverBtn" class="primary" type="button">Cari pool</button>
+            </label>
+          </div>
+          <p id="copyMsg" class="muted"></p>
+          <div id="copyTokenHead" class="copy-token-head"></div>
+          <div id="copyStats" class="copy-stats"></div>
+          <h3>Daftar Pool</h3>
+          <div id="copyPoolList" class="copy-pool-list"></div>
+        </section>
+
+        <section class="panel" id="zapPanel">
+          <p class="eyebrow">ZAP IN</p>
+          <h2>Zap In — Buka Posisi dari Pool Terpilih</h2>
+          <p class="muted" id="zapPoolInfo">Belum ada pool dipilih. Pilih pool dari daftar di atas.</p>
+          <div class="zap-steps">
+            <div class="zap-step">
+              <h3>Langkah 1 — Deposit</h3>
+              <label
+                >Mode deposit
+                <select id="zapMode">
+                  <option value="zap">Zap In (satu sisi)</option>
+                  <option value="both">Kedua token</option>
+                </select>
+              </label>
+              <label
+                >Nominal (USDC)
+                <input id="zapAmount" type="number" min="0" step="any" value="200" />
+              </label>
+              <label
+                >Slippage (%)
+                <input id="zapSlippage" type="number" min="0" step="any" value="0.5" />
+              </label>
+            </div>
+            <div class="zap-step">
+              <h3>Langkah 2 — Range</h3>
+              <label
+                >Strategi range
+                <select id="zapStrategy">
+                  <option>Spot</option>
+                  <option>Curve</option>
+                  <option>Bid-Ask</option>
+                </select>
+              </label>
+              <div class="zap-presets">
+                <button type="button" class="secondary zap-preset" data-preset="both5">±5%</button>
+                <button type="button" class="secondary zap-preset" data-preset="both10">±10%</button>
+                <button type="button" class="secondary zap-preset" data-preset="below50">−50% (di bawah spot)</button>
+                <button type="button" class="secondary zap-preset" data-preset="below70">−70% (di bawah spot)</button>
+              </div>
+              <p class="muted">Range awal dihitung otomatis dari volatilitas 24j + bin step pool; preset dan stepper menyesuaikannya.</p>
+              <div class="two">
+                <label
+                  >Min price
+                  <span class="stepper"
+                    ><button type="button" class="secondary step-btn" data-target="zapMin" data-dir="-1">−1%</button><input id="zapMin" type="number" min="0" step="any" /><button
+                      type="button"
+                      class="secondary step-btn"
+                      data-target="zapMin"
+                      data-dir="1"
+                    >
+                      +1%
+                    </button></span
+                  >
+                </label>
+                <label
+                  >Max price
+                  <span class="stepper"
+                    ><button type="button" class="secondary step-btn" data-target="zapMax" data-dir="-1">−1%</button><input id="zapMax" type="number" min="0" step="any" /><button
+                      type="button"
+                      class="secondary step-btn"
+                      data-target="zapMax"
+                      data-dir="1"
+                    >
+                      +1%
+                    </button></span
+                  >
+                </label>
+              </div>
+              <p id="zapRangeNote" class="muted"></p>
+              <p id="zapRangeInfo" class="muted"></p>
+            </div>
+            <div class="zap-step">
+              <h3>Langkah 3 — Konfirmasi</h3>
+              <div id="zapSummary" class="zap-summary"></div>
+              <div class="actions">
+                <button id="zapOpenBtn" class="primary" type="button">Confirm — Buka posisi (simulasi)</button>
+              </div>
+              <p id="zapMsg" class="muted"></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="eyebrow">POSITIONS IN POOL</p>
+          <h2>Positions In Pool</h2>
+          <p class="muted">Posisi simulasi milik desk ini di pool terpilih (bukan posisi pengguna lain).</p>
+          <div id="poolPositions" class="pool-positions"></div>
+        </section>
+
+        <section class="panel">
+          <p class="eyebrow">MONITOR</p>
+          <h2>Copy LP Monitor</h2>
+          <p class="muted">Nilai ulang semua posisi Copy LP terbuka dari harga live; posisi di luar range disarankan rebalance (DLMM) atau tutup (range generik).</p>
+          <div class="actions"><button id="copyMonitorBtn" type="button">Jalankan monitor</button></div>
+          <div id="copyMonitorOut" class="monitor-out"></div>
+        </section>
+      </section>
+
+      <!-- ============ TAB: MONTHLY PROFIT + CARD STUDIO ============ -->
+      <section id="tab-monthly" class="tab-panel">
+        <section class="panel monthly-panel">
+          <div class="monthly-layout">
+            <aside class="monthly-side">
+              <span class="side-label">Total portfolio value · <span class="live-text">● LIVE REALTIME</span></span>
+              <strong id="mSideValue" class="num side-big">—</strong>
+              <p class="muted">Nilai live: 5.000 USDC modal dasar + total PnL dari harga DexScreener terbaru — bukan angka statis.</p>
+              <div class="side-stats">
+                <div><span>All-time deposit</span><strong id="mSideDeposit" class="num">—</strong></div>
+                <div><span>Fees claimed</span><strong id="mSideFeesClaimed" class="num">—</strong></div>
+                <div><span>Claimable fees</span><strong id="mSideClaimable" class="num">—</strong></div>
+              </div>
+              <span class="side-label">Total PnL</span>
+              <div class="side-pnl-row"><strong id="mSideTotalPnl" class="num side-big">—</strong><span id="mSideTotalPnlPct" class="pct-pill">—</span></div>
+              <div class="side-stats">
+                <div><span>Avg invested</span><strong id="mSideAvg" class="num">—</strong></div>
+                <div><span>Win rate</span><strong id="mSideWinRate" class="num">—</strong></div>
+                <div><span>Biggest win</span><strong id="mSideBiggestWin" class="num">—</strong></div>
+              </div>
+              <p class="muted side-note">
+                PnL harian berasal dari ledger backend (baseline/delta dari refresh, close, dan rebalance); posisi lama dibaseline nol. Fee terakru pada siklus realtime masuk ke claimable fees dan tercatat di ledger saat
+                claim/refresh/close.
+              </p>
+            </aside>
+            <div class="monthly-main">
+              <div class="row-between">
+                <div>
+                  <p class="eyebrow">MONTHLY PROFIT</p>
+                  <h2>Kalender profit</h2>
+                </div>
+                <div class="monthly-head-right">
+                  <span class="muted">Monthly PnL:</span>
+                  <strong id="monthPnlHead" class="num">—</strong>
+                  <button id="downloadCardBtnTop" class="outline-orange" type="button">⬇ Download ReagenCorp card</button>
+                </div>
+              </div>
+
+              <!-- CARD STUDIO (menyatu di Monthly Profit, seperti hosted) -->
+              <div class="card-studio">
+                <div class="card-preview-wrap">
+                  <canvas id="cardCanvas" width="1600" height="1000"></canvas>
+                  <video id="bgVideoPreview" muted loop playsinline hidden></video>
+                </div>
+                <div class="card-studio-side">
+                  <p class="eyebrow">CARD STUDIO</p>
+                  <h3>Pilih format dari background-mu</h3>
+                  <p class="muted">Input gambar menghasilkan picture card PNG HD. Input video menghasilkan video card WebM HD 10 detik. Preview dan hasil download memakai ukuran default 1600 × 1000 px (landscape).</p>
+                  <div class="bg-pick-row">
+                    <button id="bgPickVideoBtn" class="dashed-btn" type="button">Pilih video</button>
+                    <button id="bgPickImageBtn" class="dashed-btn" type="button">Pilih gambar</button>
+                  </div>
+                  <input id="bgVideoInput" type="file" accept="video/*" hidden />
+                  <input id="bgImageInput" type="file" accept="image/*" hidden />
+                  <div class="bg-note">
+                    <p id="bgInfo" class="muted">Belum ada background. Input gambar dan video saling eksklusif.</p>
+                    <div class="actions">
+                      <button id="bgRemoveBtn" class="secondary" type="button" hidden>Hapus background</button>
+                      <button id="bgPlayBtn" class="secondary" type="button" hidden>Putar / Jeda preview video</button>
+                      <button id="downloadCardBtn" class="primary" type="button">Unduh kartu bulan ini</button>
+                    </div>
+                  </div>
+                  <label
+                    >Kecerahan background: <span id="brightnessVal">112%</span>
+                    <input id="bgBrightness" type="range" min="80" max="145" value="112" />
+                  </label>
+                  <p id="cardMsg" class="muted"></p>
+                </div>
+              </div>
+
+              <div class="month-nav">
+                <button id="monthPrev" class="secondary nav-arrow" type="button">‹</button>
+                <strong id="monthLabel">—</strong>
+                <button id="monthNext" class="secondary nav-arrow" type="button">›</button>
+                <span class="spacer"></span>
+                <button id="monthToday" class="secondary pill-btn" type="button">Hari Ini</button>
+              </div>
+              <div class="cal-week"><span>Min</span><span>Sen</span><span>Sel</span><span>Rab</span><span>Kam</span><span>Jum</span><span>Sab</span></div>
+              <div id="monthlyCalendar" class="calendar"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ============ TAB: TOP LP (DISCOVER) ============ -->
+      <section id="tab-toplp" class="tab-panel">
+        <section class="panel discover-panel">
+          <p class="eyebrow">DISCOVER · DEX SCREENER + METEORA + GOPLUS</p>
+          <h2>Top LP — Discover</h2>
+          <p class="muted">
+            Sumber: DexScreener + Meteora DLMM (Fee/TVL) + GoPlus (keamanan). Kolom <strong>Smart LP</strong> tidak tersedia dari sumber publik mana pun sehingga selalu “—”. Kandidat belum diperiksa manual berlabel
+            <strong>DD Pending — belum diperiksa, bukan rekomendasi</strong> dan tidak mendapat nomor ranking.
+          </p>
+          <div class="discover-controls">
+            <div class="disc-tabs">
+              <button type="button" class="disc-tab active" data-dtab="trending">Trending</button>
+              <button type="button" class="disc-tab" data-dtab="new">New</button>
+              <button type="button" class="disc-tab" data-dtab="feeTvl">Top Fee/TVL</button>
+              <button type="button" class="disc-tab" data-dtab="rising">Rising fees</button>
+            </div>
+            <div class="disc-tf">
+              <button type="button" class="disc-tf-btn" data-tf="m5">5M</button>
+              <button type="button" class="disc-tf-btn" data-tf="h1">1H</button>
+              <button type="button" class="disc-tf-btn" data-tf="h6">6H</button>
+              <button type="button" class="disc-tf-btn active" data-tf="h24">24H</button>
+            </div>
+            <label class="disc-check"><input type="checkbox" id="discHideRisky" /> Hide risky</label>
+            <label
+              >Chain
+              <select id="discChain">
+                <option value="ALL">Semua</option>
+              </select>
+            </label>
+            <button id="discRefreshBtn" class="secondary" type="button">Muat ulang kandidat</button>
+          </div>
+          <p id="discMsg" class="muted"></p>
+          <p id="discSourceNote" class="muted"></p>
+          <div class="discover-wrap">
+            <table class="discover-table" id="discoverTable">
+              <colgroup>
+                <col style="width: 12%" />
+                <col style="width: 4%" />
+                <col style="width: 9%" />
+                <col style="width: 7%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 6%" />
+                <col style="width: 7%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 5%" />
+                <col style="width: 4%" />
+                <col style="width: 5%" />
+                <col style="width: 6%" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Age</th>
+                  <th>Price 24h</th>
+                  <th>MCap</th>
+                  <th>Holders</th>
+                  <th>Vol 5M</th>
+                  <th>Vol 1H</th>
+                  <th>Vol 6H</th>
+                  <th>Vol 24H</th>
+                  <th>Liquidity</th>
+                  <th>F/T 5M</th>
+                  <th>F/T 1H</th>
+                  <th>F/T 6H</th>
+                  <th>F/T 24H</th>
+                  <th title="Smart LP tidak tersedia dari sumber publik mana pun — selalu kosong.">Smart LP</th>
+                  <th>Safety</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="discoverBody"></tbody>
+            </table>
+          </div>
+          <p class="muted">Fee/TVL hanya dari pool Meteora DLMM Solana (jendela yang disediakan Meteora Data API: 1H &amp; 24H; 5M/6H tidak tersedia → “—”). Baris bisa diperluas untuk analisis agent, Copy CA, dan due diligence manual.</p>
+        </section>
+      </section>
+    </main>
+
+    <!-- ============ MODALS ============ -->
+    <div id="candidateModal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="row-between">
+          <h3>Detail Analisis Agent</h3>
+          <button class="secondary modal-close" data-close="candidateModal" type="button">Tutup</button>
+        </div>
+        <div id="candidateDetail"></div>
+      </div>
+    </div>
+
+    <div id="ddModal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="row-between">
+          <h3>Due Diligence Manual</h3>
+          <button class="secondary modal-close" data-close="ddModal" type="button">Tutup</button>
+        </div>
+        <p class="muted">Periksa dengan 7 tool: GMGN, DevsNightmareProbot (Telegram), isitbundled, gatekept, Padre, bubblemaps, Fable intel. Enam cek di bawah menentukan verdict: Pending / Avoid / Short-term play / Consider.</p>
+        <div id="ddForm"></div>
+        <label
+          >Catatan
+          <textarea id="ddNotes" rows="3" placeholder="Temuan manual…"></textarea>
+        </label>
+        <div class="actions"><button id="ddSaveBtn" class="primary" type="button">Simpan DD</button></div>
+        <p id="ddMsg" class="muted"></p>
+      </div>
+    </div>
+
+    <div id="naraModal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="row-between">
+          <h3>Nara — Auto Trading LP</h3>
+          <button class="secondary modal-close" data-close="naraModal" type="button">Tutup</button>
+        </div>
+        <label class="check"><input type="checkbox" id="naraEnabled" /> Aktif (default nonaktif)</label>
+        <div class="two">
+          <label>Min agent score <input id="naraMinScore" type="number" min="0" max="100" /></label>
+          <label>Nominal per posisi (USDC) <input id="naraAmount" type="number" min="0" step="any" /></label>
+        </div>
+        <div class="two">
+          <label>Maks posisi <input id="naraMaxPos" type="number" min="1" max="20" /></label>
+          <label
+            >Filter chain
+            <select id="naraChain">
+              <option value="ALL">Semua</option>
+            </select>
+          </label>
+        </div>
+        <div class="two">
+          <label
+            >Preset range
+            <select id="naraRange">
+              <option value="narrow">Sempit (±2%)</option>
+              <option value="medium">Sedang (±5%)</option>
+              <option value="wide">Lebar (±10%)</option>
+            </select>
+          </label>
+          <label
+            >Filter verdict agent
+            <select id="naraVerdict">
+              <option value="ANY">Semua</option>
+              <option value="consider">Consider</option>
+              <option value="review">Review</option>
+              <option value="avoid">Avoid</option>
+            </select>
+          </label>
+        </div>
+        <div class="three">
+          <label>Batas kerugian harian (USDC, 0 = nonaktif) <input id="naraDailyLoss" type="number" min="0" step="any" /></label>
+          <label>Likuiditas minimum (USD) <input id="naraMinLiq" type="number" min="0" step="any" /></label>
+          <label>Holder minimum (data tak tersedia = gagal) <input id="naraMinHolder" type="number" min="0" step="any" /></label>
+        </div>
+        <div class="actions">
+          <button id="naraSaveBtn" class="primary" type="button">Simpan pengaturan</button>
+          <button id="naraRunBtn" type="button">Jalankan sekarang</button>
+        </div>
+        <div id="naraRunOut" class="run-out"></div>
+        <h4>Log Nara</h4>
+        <div id="naraLogs" class="agent-logs"></div>
+      </div>
+    </div>
+
+    <div id="byteModal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="row-between">
+          <h3>Byte — Auto TP/SL Guard</h3>
+          <button class="secondary modal-close" data-close="byteModal" type="button">Tutup</button>
+        </div>
+        <label class="check"><input type="checkbox" id="byteArmed" /> Armed (nonaktif = paused)</label>
+        <div class="two">
+          <label>TP default posisi baru (%) <input id="byteTp" type="number" min="0" step="any" /></label>
+          <label>SL default posisi baru (%) <input id="byteSl" type="number" min="0" step="any" /></label>
+        </div>
+        <div class="actions">
+          <button id="byteSaveBtn" class="primary" type="button">Simpan pengaturan</button>
+          <button id="byteCheckBtn" type="button">Periksa TP/SL sekarang (harga live)</button>
+        </div>
+        <p id="byteCheckOut" class="muted"></p>
+        <h4>Jarak posisi ke TP/SL</h4>
+        <div id="byteChart" class="byte-chart"></div>
+        <h4>Log Byte</h4>
+        <div id="byteLogs" class="agent-logs"></div>
+      </div>
+    </div>
+
+    <div id="soraModal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="row-between">
+          <h3>Sora — Portfolio Analyst</h3>
+          <button class="secondary modal-close" data-close="soraModal" type="button">Tutup</button>
+        </div>
+        <p class="muted">Analis on-demand — selalu BERJALAN. Semua angka dihitung dari data desk.</p>
+        <div id="soraBody"></div>
+        <h4>Log Sora</h4>
+        <div id="soraLogs" class="agent-logs"></div>
+      </div>
+    </div>
+
+    <div id="kopiModal" class="modal" hidden>
+      <div class="modal-card wide">
+        <div class="row-between">
+          <h3>Kopi — Copy Trading LP</h3>
+          <button class="secondary modal-close" data-close="kopiModal" type="button">Tutup</button>
+        </div>
+        <p class="muted">
+          Watchlist leader <strong>input manual — bukan data live</strong>: masukkan sendiri alamat wallet asli + statistik (winrate, PnL, hold time) yang kamu catat dari LP Agent Smart LP atau platform lain. Kopi meniru
+          <em>profil strategi tercatat</em> di simulasi — bukan gerakan live wallet.
+        </p>
+        <label class="check"><input type="checkbox" id="kopiEnabled" /> Copy Trading aktif</label>
+        <h4>Tambah / edit leader</h4>
+        <input type="hidden" id="leaderId" />
+        <div class="two">
+          <label>Label <input id="leaderLabel" placeholder="cth. Leader SOL #1" /></label>
+          <label>Alamat wallet asli <input id="leaderWallet" placeholder="Alamat wallet leader" /></label>
+        </div>
+        <div class="three">
+          <label
+            >Chain
+            <select id="leaderChain"></select>
+          </label>
+          <label>Platform sumber <input id="leaderPlatform" value="LP Agent Smart LP" /></label>
+          <label>Winrate (%) <input id="leaderWinrate" type="number" min="0" max="100" step="any" /></label>
+        </div>
+        <div class="three">
+          <label>Total PnL (USD) <input id="leaderPnl" type="number" step="any" /></label>
+          <label>Hold time <input id="leaderHold" placeholder="cth. 6 jam" /></label>
+          <label
+            >Strategi
+            <select id="leaderStrategy">
+              <option>Spot</option>
+              <option>Curve</option>
+              <option>Bid-Ask</option>
+            </select>
+          </label>
+        </div>
+        <label>CA token favorit (opsional) <input id="leaderFav" placeholder="Alamat token favorit leader" /></label>
+        <div class="actions">
+          <button id="leaderSaveBtn" class="primary" type="button">Simpan leader</button>
+          <button id="leaderCancelEditBtn" class="secondary" type="button" hidden>Batal edit</button>
+        </div>
+        <p id="leaderMsg" class="muted"></p>
+        <h4>Watchlist (terurut winrate tertinggi)</h4>
+        <div id="leaderList" class="leader-list"></div>
+        <h4>Pengaturan Kopi</h4>
+        <div class="two">
+          <label
+            >Leader yang disalin
+            <select id="kopiLeaderSelect">
+              <option value="">Otomatis — peringkat #1</option>
+            </select>
+          </label>
+          <label>Nominal per copy (USDC) <input id="kopiAmount" type="number" min="0" step="any" /></label>
+        </div>
+        <div class="three">
+          <label>Maks posisi copy <input id="kopiMaxPos" type="number" min="1" max="20" /></label>
+          <label
+            >Preset range
+            <select id="kopiRange">
+              <option value="narrow">Sempit</option>
+              <option value="medium">Sedang</option>
+              <option value="wide">Lebar</option>
+            </select>
+          </label>
+          <label>Batas kerugian harian (USDC, 0 = nonaktif) <input id="kopiDailyLoss" type="number" min="0" step="any" /></label>
+        </div>
+        <div class="actions">
+          <button id="kopiSaveBtn" class="primary" type="button">Simpan pengaturan</button>
+          <button id="kopiRunBtn" type="button">Jalankan Kopi sekarang</button>
+        </div>
+        <div id="kopiRunOut" class="run-out"></div>
+        <h4>Log Kopi</h4>
+        <div id="kopiLogs" class="agent-logs"></div>
+      </div>
+    </div>
+
+    <script src="assets/js/app.js"></script>
+  </body>
+</html>
