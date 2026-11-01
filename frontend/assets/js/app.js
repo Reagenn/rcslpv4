@@ -49,6 +49,7 @@ let walletChainId = "";
 let walletNativeBalance = null;
 let walletBoundProvider = null;
 const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
+const BASE_SEPOLIA_UNISWAP_V3_FACTORY = "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24";
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
 const CHAIN_COLORS = { SOL: "#14f195", BASE: "#5b8cff", ROBINHOOD: "#00c805", BSC: "#f0b90b", HYPEREVM: "#a7f3ea", ARC: "#7d9bff", ETH: "#8a9cf5" };
 
@@ -298,6 +299,93 @@ async function switchToBaseSepolia() {
     await refreshBrowserWallet();
   }
 }
+function setPoolCheckResult(message, isError) {
+  const el = $("poolCheckResult");
+  el.textContent = message;
+  el.classList.toggle("error", !!isError);
+}
+function addressAbiWord(address) {
+  return address.slice(2).toLowerCase().padStart(64, "0");
+}
+function abiWord(data, index) {
+  const body = String(data || "").replace(/^0x/, "");
+  const start = index * 64;
+  const word = body.slice(start, start + 64);
+  if (word.length !== 64) throw new Error("Respons ABI tidak lengkap dari RPC.");
+  return word;
+}
+function abiAddress(data) {
+  return "0x" + abiWord(data, 0).slice(-40);
+}
+async function baseSepoliaCall(to, data) {
+  return walletProvider.request({ method: "eth_call", params: [{ to, data }, "latest"] });
+}
+async function checkBaseSepoliaPool() {
+  const button = $("poolCheckBtn");
+  const tokenA = $("poolTokenA").value.trim();
+  const tokenB = $("poolTokenB").value.trim();
+  const fee = Number($("poolFeeTier").value);
+  const addressPattern = /^0x[a-fA-F0-9]{40}$/;
+  if (!walletProvider || !walletAddress) return setPoolCheckResult("Hubungkan wallet terlebih dahulu.", true);
+  if (!addressPattern.test(tokenA) || !addressPattern.test(tokenB)) return setPoolCheckResult("Masukkan dua alamat kontrak ERC-20 yang valid.", true);
+  if (tokenA.toLowerCase() === tokenB.toLowerCase()) return setPoolCheckResult("Token A dan Token B harus berbeda.", true);
+  if (![500, 3000, 10000].includes(fee)) return setPoolCheckResult("Fee tier tidak valid.", true);
+  button.disabled = true;
+  setPoolCheckResult("Memeriksa chain dan factory Uniswap V3 Base Sepolia…");
+  try {
+    walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
+    if (walletChainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID) {
+      renderBrowserWallet();
+      throw new Error("Pindahkan wallet ke Base Sepolia sebelum memeriksa pool.");
+    }
+    const factoryData = "0x1698ee82" + addressAbiWord(tokenA) + addressAbiWord(tokenB) + fee.toString(16).padStart(64, "0");
+    const poolResult = await baseSepoliaCall(BASE_SEPOLIA_UNISWAP_V3_FACTORY, factoryData);
+    const poolAddress = abiAddress(poolResult);
+    if (/^0x0{40}$/i.test(poolAddress)) {
+      setPoolCheckResult("Pool tidak ditemukan untuk pasangan token dan fee tier ini pada factory Uniswap V3 Base Sepolia.");
+      return;
+    }
+    const [token0Result, token1Result, slot0Result, liquidityResult] = await Promise.all([
+      baseSepoliaCall(poolAddress, "0x0dfe1681"),
+      baseSepoliaCall(poolAddress, "0xd21220a7"),
+      baseSepoliaCall(poolAddress, "0x3850c7bd"),
+      baseSepoliaCall(poolAddress, "0x1a686502"),
+    ]);
+    const token0 = abiAddress(token0Result);
+    const token1 = abiAddress(token1Result);
+    const [decimals0Result, decimals1Result] = await Promise.all([
+      baseSepoliaCall(token0, "0x313ce567"),
+      baseSepoliaCall(token1, "0x313ce567"),
+    ]);
+    const decimals0 = Number(BigInt("0x" + abiWord(decimals0Result, 0)));
+    const decimals1 = Number(BigInt("0x" + abiWord(decimals1Result, 0)));
+    if (decimals0 > 36 || decimals1 > 36) throw new Error("Decimals token di luar batas yang didukung.");
+    const slot0Body = String(slot0Result || "").replace(/^0x/, "");
+    const sqrtPriceX96 = BigInt("0x" + abiWord(slot0Result, 0));
+    const tick = Number(BigInt.asIntN(24, BigInt("0x" + abiWord(slot0Result, 1))));
+    const rawLiquidity = BigInt("0x" + abiWord(liquidityResult, 0));
+    let priceText = "belum diinisialisasi";
+    if (sqrtPriceX96 > 0n && slot0Body.length >= 64) {
+      const sqrtRatio = Number(sqrtPriceX96) / 2 ** 96;
+      const price = sqrtRatio * sqrtRatio * 10 ** (decimals0 - decimals1);
+      if (Number.isFinite(price) && price > 0) priceText = price.toLocaleString("en-US", { maximumSignificantDigits: 8 });
+    }
+    setPoolCheckResult(
+      "Pool ditemukan · " + poolAddress +
+      "\nToken0: " + token0 + " (" + decimals0 + " decimals)" +
+      "\nToken1: " + token1 + " (" + decimals1 + " decimals)" +
+      "\nFee: " + (fee / 10000) + "% · Tick: " + tick +
+      "\nSpot indikatif: 1 token0 ≈ " + priceText + " token1" +
+      "\nLiquidity pool (raw): " + rawLiquidity.toString() +
+      "\nRead-only call; bukan quote mint/eksekusi dan tidak ada transaksi dikirim.",
+    );
+  } catch (e) {
+    setPoolCheckResult(e && e.message ? e.message : "Gagal membaca pool dari RPC wallet.", true);
+  } finally {
+    button.disabled = false;
+    renderBrowserWallet();
+  }
+}
 function initBrowserWallet() {
   walletProvider = window.ethereum || null;
   if (walletProvider) {
@@ -309,6 +397,7 @@ function initBrowserWallet() {
   renderBrowserWallet();
   $("walletConnectBtn").addEventListener("click", connectBrowserWallet);
   $("walletSwitchBtn").addEventListener("click", switchToBaseSepolia);
+  $("poolCheckBtn").addEventListener("click", checkBaseSepoliaPool);
 }
 
 function renderTransactions() {

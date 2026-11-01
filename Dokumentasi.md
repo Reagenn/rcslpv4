@@ -202,13 +202,17 @@ persisten di `data.json`. Frontend: `renderBalances()`,
 `POST /api/trade`, `defaultState()`, `saveState()`.
 
 Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi: pengguna harus
-menyetujui `eth_requestAccounts`; UI hanya membaca `eth_chainId` dan
-`eth_getBalance` saat jaringan Base Sepolia (84532) aktif. Tombol pindah
-jaringan memakai `wallet_switchEthereumChain` / `wallet_addEthereumChain`.
-Alamat hanya berada di memori frontend. Tidak ada private key, transaksi
-signing, atau endpoint backend wallet pada tahap ini. Frontend:
-`initBrowserWallet()`, `connectBrowserWallet()`, `refreshBrowserWallet()`,
-panel `#walletPanel`.
+menyetujui `eth_requestAccounts`; UI membaca `eth_chainId` dan `eth_getBalance`
+saat Base Sepolia (84532) aktif. Tombol pindah jaringan memakai
+`wallet_switchEthereumChain` / `wallet_addEthereumChain`. Pemeriksa pool
+Uniswap V3 melakukan `eth_call` read-only ke factory Base Sepolia
+`0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24` (alamat dari
+[deployment docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments))
+untuk melihat pool, tick, liquidity raw, dan harga spot indikatif. Ini bukan
+quote mint/eksekusi. Alamat wallet hanya berada di memori frontend. Tidak ada
+private key, transaksi signing, atau endpoint backend wallet pada tahap ini.
+Frontend: `initBrowserWallet()`, `connectBrowserWallet()`,
+`refreshBrowserWallet()`, `checkBaseSepoliaPool()`, panel `#walletPanel`.
 
 ### 5. Simulasi Meteora DLMM (Solana)
 Price bins + active bin, bin step, strategi Spot/Curve/Bid-Ask,

@@ -1870,6 +1870,46 @@ input[type="range"] {
   border-radius: 10px;
   background: var(--panel2);
 }
+.pool-preflight {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.pool-preflight h3 {
+  margin: 0 0 6px;
+}
+.pool-preflight .muted {
+  margin: 6px 0 12px;
+}
+.pool-preflight input,
+.pool-preflight select {
+  width: 100%;
+  margin-top: 6px;
+  background: #0d0d10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: var(--text);
+}
+.pool-preflight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+.pool-preflight-actions label {
+  min-width: 150px;
+}
+#poolCheckResult {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+#poolCheckResult.error {
+  color: var(--danger);
+}
 .wallet-readout span {
   display: block;
   color: var(--muted);

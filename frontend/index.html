@@ -101,7 +101,7 @@
         <section class="panel wallet-panel" id="walletPanel">
           <div class="wallet-panel-head">
             <div>
-              <p</div> class="eyebrow">WALLET BROWSER · BASE SEPOLIA TESTNET</p>
+              <p class="eyebrow">WALLET BROWSER · BASE SEPOLIA TESTNET</p>
               <h2>Hubungkan wallet testnet</h2>
               <p class="muted">Koneksi EIP-1193 untuk membaca alamat dan saldo ETH testnet. Tidak ada private key yang dibaca/disimpan, dan belum ada transaksi yang ditandatangani.</p>
             </div>
@@ -115,6 +115,24 @@
             <div><span>Alamat wallet</span><strong id="walletAddress">—</strong></div>
             <div><span>Jaringan</span><strong id="walletNetwork">—</strong></div>
             <div><span>Saldo native</span><strong id="walletNativeBalance">—</strong></div>
+          </div>
+          <div class="pool-preflight">
+            <p class="eyebrow">BASE SEPOLIA · UNISWAP V3 · READ ONLY</p>
+            <h3>Cek pool dan harga spot indikatif</h3>
+            <p class="muted">Cari pool dari factory resmi Uniswap V3 testnet. Ini bukan quote eksekusi atau simulasi mint LP; tidak ada transaksi yang dikirim.</p>
+            <div class="two">
+              <label>Token A (alamat kontrak ERC-20)
+                <input id="poolTokenA" spellcheck="false" placeholder="0x…" autocomplete="off" />
+              </label>
+              <label>Token B (alamat kontrak ERC-20)
+                <input id="poolTokenB" spellcheck="false" placeholder="0x…" autocomplete="off" />
+              </label>
+            </div>
+            <div class="pool-preflight-actions">
+              <label>Fee tier<select id="poolFeeTier"><option value="500">0.05%</option><option value="3000" selected>0.30%</option><option value="10000">1.00%</option></select></label>
+              <button id="poolCheckBtn" class="secondary" type="button">Periksa pool testnet</button>
+            </div>
+            <p id="poolCheckResult" class="muted" role="status" aria-live="polite">Hubungkan wallet dan pilih Base Sepolia untuk memeriksa pool.</p>
           </div>
         </section>
 
