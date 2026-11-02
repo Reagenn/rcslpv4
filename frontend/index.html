@@ -56,7 +56,7 @@
           <p class="eyebrow">MULTI-CHAIN · DEX SCREENER DATA</p>
           <h1>Liquidity operations,<br /><span class="accent-text">one desk.</span></h1>
           <p class="muted hero-sub">
-            Satu desk simulasi operasi LP multi-chain — pantau fee &amp; PnL, cari token, dan jalankan Agent Crew. Swap token ERC-20 tersedia di Base Sepolia setelah konfirmasi wallet; posisi LP desk tetap simulasi.
+            Satu desk simulasi operasi LP multi-chain — pantau fee &amp; PnL, cari token, dan jalankan Agent Crew. Swap ERC-20 sungguhan tersedia di Base Mainnet dan menggunakan aset nyata setelah konfirmasi wallet; posisi LP desk tetap simulasi.
           </p>
           <p class="muted"><button id="resetDemoBtn" class="linkish" type="button">Reset demo ke keadaan default</button></p>
         </div>
@@ -90,7 +90,7 @@
             <span class="rt-title">LIVE · PORTFOLIO REALTIME</span>
           </div>
           <p class="muted">
-            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Posisi dan dana desk tetap simulasi; swap wallet hanya di Base Sepolia testnet setelah konfirmasi. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
+            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Posisi dan dana desk tetap simulasi; swap wallet di Base Mainnet memakai aset nyata setelah konfirmasi. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
             Profit + Card Studio, Copy LP, Top LP dari cache server — scan sumber maks. tiap 5 menit agar tidak kena batas API publik). Refresh dilewati sesaat bila ada modal terbuka, kamu sedang mengetik, konfirmasi hapus tampil, atau
             detail Discover terbuka.
           </p>
@@ -135,17 +135,17 @@
           </div>
         </section>
 
-        <!-- WALLET BROWSER: BASE SEPOLIA TESTNET ONLY -->
+        <!-- WALLET BROWSER: BASE MAINNET ONLY -->
         <section class="panel wallet-panel" id="walletPanel">
           <div class="wallet-panel-head">
             <div>
-              <p class="eyebrow">WALLET BROWSER · BASE SEPOLIA TESTNET</p>
-              <h2>Hubungkan wallet testnet</h2>
-              <p class="muted">Koneksi wallet EIP-1193 untuk alamat, saldo testnet, dan transaksi Base Sepolia yang kamu konfirmasi. Aplikasi tidak membaca atau menyimpan private key.</p>
+              <p class="eyebrow">WALLET BROWSER · BASE MAINNET · REAL FUNDS</p>
+              <h2>Hubungkan wallet Base</h2>
+              <p class="muted">Koneksi wallet EIP-1193 untuk alamat, saldo mainnet, dan transaksi Base Mainnet yang kamu konfirmasi. Aplikasi tidak membaca atau menyimpan private key.</p>
             </div>
             <div class="wallet-actions">
               <button id="walletConnectBtn" class="primary" type="button">Hubungkan wallet</button>
-              <button id="walletSwitchBtn" class="secondary" type="button" hidden>Pindah ke Base Sepolia</button>
+              <button id="walletSwitchBtn" class="secondary" type="button" hidden>Pindah ke Base Mainnet</button>
             </div>
           </div>
           <div class="wallet-readout">
@@ -155,9 +155,9 @@
             <div><span>Saldo native</span><strong id="walletNativeBalance">—</strong></div>
           </div>
           <div class="pool-preflight">
-            <p class="eyebrow">POOL CHECK · BASE SEPOLIA · UNISWAP V3</p>
-            <h3>Swap token ERC-20 testnet</h3>
-            <p class="muted">Lookup pool memakai factory Uniswap V3 dan quote exact-input dari QuoterV2 Base Sepolia. Swap memakai router tetap Uniswap SwapRouter02. Hanya Base Sepolia; tidak ada mainnet.</p>
+            <p class="eyebrow">POOL CHECK · BASE MAINNET · UNISWAP V3</p>
+            <h3>Swap token ERC-20 di Base Mainnet</h3>
+            <p class="muted">Lookup pool memakai factory Uniswap V3 dan quote exact-input dari QuoterV2 Base Mainnet. Swap memakai router tetap Uniswap SwapRouter02. Hanya Base Mainnet yang didukung.</p>
             <div class="token-select-fields">
               <div class="token-select-field">
                 <span>Token A</span>
@@ -170,23 +170,23 @@
                 <select id="poolTokenB" aria-label="Token B terpilih" hidden></select>
               </div>
             </div>
-            <p class="muted">Cari token berdasarkan nama, simbol, atau alamat. Ada pilihan cepat WETH / USDC; token lain bisa di-import dari kontrak Base Sepolia.</p>
+            <p class="muted">Cari token berdasarkan nama, simbol, atau alamat. Ada pilihan cepat WETH / USDC; token lain bisa di-import dari kontrak Base Mainnet.</p>
             <p id="poolTokenDetails" class="muted">Pilih token untuk melihat alamat kontraknya.</p>
             <details class="token-import">
-              <summary>Token tidak ada? Import token Base Sepolia</summary>
+              <summary>Token tidak ada? Import token Base Mainnet</summary>
               <div class="pool-preflight-actions">
                 <label>Alamat kontrak ERC-20
                   <input id="customTokenAddress" spellcheck="false" placeholder="0x…" autocomplete="off" />
                 </label>
                 <button id="addCustomTokenBtn" class="secondary" type="button">Import token</button>
               </div>
-              <p id="customTokenStatus" class="muted" role="status" aria-live="polite">Kontrak dan fungsi ERC-20 dicek lewat RPC Base Sepolia; daftar import hanya tersimpan selama tab ini terbuka. Nama/simbol bukan verifikasi keaslian—selalu cek alamat kontrak.</p>
+              <p id="customTokenStatus" class="muted" role="status" aria-live="polite">Kontrak dan fungsi ERC-20 dicek lewat RPC Base Mainnet; daftar import hanya tersimpan selama tab ini terbuka. Nama/simbol bukan verifikasi keaslian—selalu cek alamat kontrak.</p>
             </details>
             <div class="pool-preflight-actions">
               <label>Fee tier<select id="poolFeeTier"><option value="500">0.05%</option><option value="3000" selected>0.30%</option><option value="10000">1.00%</option></select></label>
-              <button id="poolCheckBtn" class="secondary" type="button">Periksa pool testnet</button>
+              <button id="poolCheckBtn" class="secondary" type="button">Periksa pool mainnet</button>
             </div>
-            <p id="poolCheckResult" class="muted" role="status" aria-live="polite">Hubungkan wallet dan pilih Base Sepolia untuk memeriksa pool.</p>
+            <p id="poolCheckResult" class="muted" role="status" aria-live="polite">Hubungkan wallet dan pilih Base Mainnet untuk memeriksa pool.</p>
             <div class="pool-quote-form">
               <label>Arah quote
                 <select id="poolQuoteDirection"><option value="aToB">Token A → Token B</option><option value="bToA">Token B → Token A</option></select>
@@ -194,12 +194,14 @@
               <label>Jumlah input
                 <input id="poolQuoteAmount" type="text" inputmode="decimal" placeholder="Contoh: 1.25" autocomplete="off" />
               </label>
-              <button id="poolQuoteBtn" class="secondary" type="button" disabled>Quote swap testnet</button>
+              <button id="poolQuoteBtn" class="secondary" type="button" disabled>Quote swap mainnet</button>
             </div>
             <p id="poolQuoteResult" class="muted" role="status" aria-live="polite">Periksa pool terlebih dahulu untuk mengaktifkan quote.</p>
             <div class="swap-execution-panel">
-              <p class="eyebrow">SWAP SUNGGUHAN · BASE SEPOLIA TESTNET</p>
-              <p class="muted">Gunakan token testnet saja. Approval hanya sebesar input ke router SwapRouter02 yang ditetapkan. Approval dan swap adalah transaksi terpisah, masing-masing perlu konfirmasi wallet. Periksa alamat token dan detail transaksi di wallet; batalkan jika wallet menampilkan security warning. Aplikasi menolak jaringan selain Base Sepolia.</p>
+              <p class="eyebrow">SWAP SUNGGUHAN · BASE MAINNET · ASET NYATA</p>
+              <p class="mainnet-risk-note"><strong>Perhatian: ini bukan testnet.</strong> Approval dan swap memakai aset nyata di Base Mainnet. Transaksi on-chain tidak dapat dibatalkan; token palsu, alamat salah, slippage, atau perubahan harga dapat menyebabkan kehilangan dana. Periksa alamat token, penerima, router, dan detail transaksi di wallet sebelum menandatangani.</p>
+              <label class="mainnet-ack"><input id="mainnetRiskAcknowledged" type="checkbox" /> Saya paham dan ingin melanjutkan dengan aset nyata di Base Mainnet.</label>
+              <p class="muted">Approval dibatasi tepat sebesar jumlah input ke router Uniswap SwapRouter02. Approval dan swap adalah transaksi terpisah dan masing-masing tetap perlu konfirmasi wallet. Aplikasi menolak jaringan selain Base Mainnet.</p>
               <div class="pool-preflight-actions">
                 <label>Slippage batas
                   <select id="swapSlippage"><option value="50">0.50%</option><option value="100" selected>1.00%</option><option value="200">2.00%</option><option value="500">5.00%</option></select>
@@ -208,8 +210,8 @@
                 <button id="swapExecuteBtn" class="primary" type="button" disabled>Swap lewat wallet</button>
               </div>
               <p id="swapApprovalStatus" class="muted" role="status" aria-live="polite">Buat quote terlebih dahulu.</p>
-              <p id="swapTxResult" class="muted" role="status" aria-live="polite">Belum ada transaksi testnet.</p>
-              <a id="swapTxLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Lihat transaksi di BaseScan Sepolia</a>
+              <p id="swapTxResult" class="muted" role="status" aria-live="polite">Belum ada transaksi mainnet.</p>
+              <a id="swapTxLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Lihat transaksi di BaseScan</a>
             </div>
           </div>
         </section>
@@ -840,9 +842,9 @@
         <div class="token-picker-list-wrap">
           <p class="eyebrow">TOKEN TERSEDIA</p>
           <div id="tokenPickerList" class="token-picker-list"></div>
-          <p id="tokenPickerEmpty" class="muted" hidden>Token tidak ditemukan. Import alamat kontrak Base Sepolia dari form sebelumnya.</p>
+          <p id="tokenPickerEmpty" class="muted" hidden>Token tidak ditemukan. Import alamat kontrak Base Mainnet dari form sebelumnya.</p>
         </div>
-        <p class="muted token-picker-note">Daftar berisi token testnet bawaan dan token yang kamu import. Simbol token bukan jaminan keaslian; periksa alamat kontrak.</p>
+        <p class="muted token-picker-note">Daftar berisi token mainnet bawaan dan token yang kamu import. Simbol token bukan jaminan keaslian; periksa alamat kontrak.</p>
       </div>
     </div>
 

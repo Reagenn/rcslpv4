@@ -2218,6 +2218,33 @@ input[type="range"] {
 .swap-execution-panel .pool-preflight-actions {
   align-items: end;
 }
+.mainnet-risk-note {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid rgb(229 72 77 / 65%);
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  background: rgb(229 72 77 / 10%);
+  color: var(--text);
+}
+.mainnet-risk-note strong { color: #ff8588; }
+.mainnet-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--text);
+}
+.mainnet-ack input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+}
 #swapTxLink {
   display: inline-block;
   margin: 4px 0 0;

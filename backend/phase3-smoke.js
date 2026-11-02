@@ -8,6 +8,17 @@ const { spawn } = require("child_process");
 
 (async () => {
   const root = process.cwd();
+  const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
+  for (const config of [
+    'const BASE_MAINNET_CHAIN_ID = "0x2105"',
+    "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+    "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+    "0x2626664c2603336E57B271c5C0b26F421741e481",
+    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  ]) assert(frontendScript.includes(config), "Base Mainnet swap config is present: " + config);
+  assert(frontendScript.includes("mainnetRiskAcknowledged"), "mainnet risk acknowledgement gates swaps");
+  assert(!frontendScript.includes("BASE_SEPOLIA_CHAIN_ID"), "no testnet chain guard remains");
+  assert(!frontendScript.includes("0x036CbD53842c5426634e7929541eC2318f3dCF7e"), "testnet USDC is removed");
   const temp = path.join(os.tmpdir(), "rcs-phase3-" + crypto.randomBytes(6).toString("hex"));
   const port = 41000 + crypto.randomInt(10000);
   const base = "http://127.0.0.1:" + port;
@@ -135,7 +146,7 @@ const { spawn } = require("child_process");
     result = await request("/api/auth/login", "POST", null, { username: "alice", password: "wrong-password" });
     assert.equal(result.response.status, 401, "invalid password rejected");
 
-    console.log("Phase 3 smoke tests passed: auth, private defaults, account isolation, follow, leaderboard, share flags, CSRF and logout.");
+    console.log("Smoke tests passed: Base Mainnet config, SPA assets, auth, private defaults, account isolation, follow, leaderboard, CSRF and logout.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();

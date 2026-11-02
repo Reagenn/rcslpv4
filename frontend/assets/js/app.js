@@ -1,6 +1,6 @@
 "use strict";
 /* LP Desk local frontend v4 — LP positions remain simulation-only.
- * Browser-wallet swaps are limited to user-confirmed Base Sepolia transactions; no keys are read or stored.
+ * Browser-wallet swaps are limited to user-confirmed Base Mainnet transactions; no keys are read or stored.
  * SATU font stack dipakai UI (CSS) dan canvas Card Studio (FONT_STACK di sini). */
 const $ = (id) => document.getElementById(id);
 const FONT_STACK = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif';
@@ -54,18 +54,18 @@ let rangeNotificationBaselineReady = false;
 let previousRealtimeRange = new Map();
 let rangeAlertsSent = new Set();
 let deferredPwaInstallPrompt = null;
-const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
-const BASE_SEPOLIA_UNISWAP_V3_FACTORY = "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24";
-const BASE_SEPOLIA_UNISWAP_V3_QUOTER = "0xC5290058841028F1614F3A6F0F5816cAd0df5E27";
-const BASE_SEPOLIA_UNISWAP_V3_ROUTER = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4";
-const BASE_SEPOLIA_TOKENS = [
+const BASE_MAINNET_CHAIN_ID = "0x2105";
+const BASE_MAINNET_UNISWAP_V3_FACTORY = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD";
+const BASE_MAINNET_UNISWAP_V3_QUOTER = "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a";
+const BASE_MAINNET_UNISWAP_V3_ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481";
+const BASE_MAINNET_TOKENS = [
   { symbol: "WETH", name: "Wrapped Ether", address: "0x4200000000000000000000000000000000000006", decimals: 18 },
-  { symbol: "USDC", name: "USD Coin (testnet)", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6 },
+  { symbol: "USDC", name: "USD Coin (Base)", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
 ];
-let importedBaseSepoliaTokens = [];
+let importedBaseMainnetTokens = [];
 let tokenPickerTarget = "A";
-let baseSepoliaPoolContext = null;
-let baseSepoliaSwapQuote = null;
+let baseMainnetPoolContext = null;
+let baseMainnetSwapQuote = null;
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
 const CHAIN_COLORS = { SOL: "#14f195", BASE: "#5b8cff", ROBINHOOD: "#00c805", BSC: "#f0b90b", HYPEREVM: "#a7f3ea", ARC: "#7d9bff", ETH: "#8a9cf5" };
 
@@ -348,11 +348,11 @@ function setWalletStatus(message, isError) {
 }
 function renderBrowserWallet() {
   $("walletAddress").textContent = walletAddress ? walletAddress.slice(0, 6) + "…" + walletAddress.slice(-4) : "—";
-  const onBaseSepolia = walletChainId.toLowerCase() === BASE_SEPOLIA_CHAIN_ID;
+  const onBaseMainnet = walletChainId.toLowerCase() === BASE_MAINNET_CHAIN_ID;
   const chainNumber = walletChainId ? Number.parseInt(walletChainId, 16) : 0;
-  $("walletNetwork").textContent = !walletChainId ? "—" : onBaseSepolia ? "Base Sepolia · 84532" : "Chain ID " + chainNumber;
+  $("walletNetwork").textContent = !walletChainId ? "—" : onBaseMainnet ? "Base Mainnet · 8453" : "Chain ID " + chainNumber;
   $("walletNativeBalance").textContent = walletNativeBalance == null ? "—" : walletNativeBalance + " ETH";
-  $("walletSwitchBtn").hidden = !walletAddress || onBaseSepolia;
+  $("walletSwitchBtn").hidden = !walletAddress || onBaseMainnet;
   $("walletConnectBtn").textContent = walletAddress ? "Ganti wallet" : "Hubungkan wallet";
 }
 function weiToEth(weiHex) {
@@ -367,7 +367,7 @@ function bindWalletEvents(provider) {
   provider.on("accountsChanged", (accounts) => {
     walletAddress = Array.isArray(accounts) ? (accounts[0] || "") : "";
     walletNativeBalance = null;
-    clearBaseSepoliaSwapQuote("Akun wallet berubah. Buat quote baru.");
+    clearBaseMainnetSwapQuote("Akun wallet berubah. Buat quote baru.");
     renderBrowserWallet();
     if (walletAddress) refreshBrowserWallet();
     else setWalletStatus("Wallet tidak terhubung di aplikasi.");
@@ -375,10 +375,10 @@ function bindWalletEvents(provider) {
   provider.on("chainChanged", (chainId) => {
     walletChainId = String(chainId || "");
     walletNativeBalance = null;
-    baseSepoliaPoolContext = null;
+    baseMainnetPoolContext = null;
     $("poolQuoteBtn").disabled = true;
-    clearBaseSepoliaSwapQuote("Jaringan berubah. Periksa ulang pool dan quote di Base Sepolia.");
-    setPoolQuoteResult("Jaringan berubah. Periksa ulang pool di Base Sepolia.");
+    clearBaseMainnetSwapQuote("Jaringan berubah. Periksa ulang pool dan quote di Base Mainnet.");
+    setPoolQuoteResult("Jaringan berubah. Periksa ulang pool di Base Mainnet.");
     renderBrowserWallet();
     if (walletAddress) refreshBrowserWallet();
   });
@@ -386,9 +386,9 @@ function bindWalletEvents(provider) {
     walletAddress = "";
     walletChainId = "";
     walletNativeBalance = null;
-    baseSepoliaPoolContext = null;
+    baseMainnetPoolContext = null;
     $("poolQuoteBtn").disabled = true;
-    clearBaseSepoliaSwapQuote("Wallet terputus. Buat quote baru setelah menghubungkan kembali.");
+    clearBaseMainnetSwapQuote("Wallet terputus. Buat quote baru setelah menghubungkan kembali.");
     renderBrowserWallet();
     setWalletStatus("Wallet terputus.");
   });
@@ -397,13 +397,13 @@ async function refreshBrowserWallet() {
   if (!walletProvider || !walletAddress) return;
   try {
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
-    if (walletChainId.toLowerCase() === BASE_SEPOLIA_CHAIN_ID) {
+    if (walletChainId.toLowerCase() === BASE_MAINNET_CHAIN_ID) {
       const balance = await walletProvider.request({ method: "eth_getBalance", params: [walletAddress, "latest"] });
       walletNativeBalance = weiToEth(balance);
-      setWalletStatus("Wallet terhubung · Base Sepolia");
+      setWalletStatus("Wallet terhubung · Base Mainnet");
     } else {
       walletNativeBalance = null;
-      setWalletStatus("Jaringan berbeda. Pindah ke Base Sepolia untuk melanjutkan.", true);
+      setWalletStatus("Jaringan berbeda. Pindah ke Base Mainnet untuk melanjutkan.", true);
     }
     renderBrowserWallet();
   } catch (e) {
@@ -425,7 +425,7 @@ async function connectBrowserWallet() {
     const accounts = await walletProvider.request({ method: "eth_requestAccounts" });
     walletAddress = Array.isArray(accounts) ? (accounts[0] || "") : "";
     if (!walletAddress) throw new Error("Wallet tidak mengembalikan alamat akun.");
-    setWalletStatus("Wallet terhubung. Memeriksa Base Sepolia…");
+    setWalletStatus("Wallet terhubung. Memeriksa Base Mainnet…");
     await refreshBrowserWallet();
   } catch (e) {
     setWalletStatus(e && e.code === 4001 ? "Permintaan koneksi ditolak di wallet." : "Koneksi gagal: " + (e && e.message ? e.message : "provider error"), true);
@@ -434,27 +434,27 @@ async function connectBrowserWallet() {
     renderBrowserWallet();
   }
 }
-async function switchToBaseSepolia() {
+async function switchToBaseMainnet() {
   if (!walletProvider) return;
   const button = $("walletSwitchBtn");
   button.disabled = true;
   try {
-    await walletProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BASE_SEPOLIA_CHAIN_ID }] });
+    await walletProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BASE_MAINNET_CHAIN_ID }] });
   } catch (e) {
     if (e && e.code === 4902) {
       try {
         await walletProvider.request({
           method: "wallet_addEthereumChain",
           params: [{
-            chainId: BASE_SEPOLIA_CHAIN_ID,
-            chainName: "Base Sepolia",
+            chainId: BASE_MAINNET_CHAIN_ID,
+            chainName: "Base Mainnet",
             nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-            rpcUrls: ["https://sepolia.base.org"],
-            blockExplorerUrls: ["https://sepolia.basescan.org"],
+            rpcUrls: ["https://mainnet.base.org"],
+            blockExplorerUrls: ["https://basescan.org"],
           }],
         });
       } catch (addError) {
-        setWalletStatus("Gagal menambahkan Base Sepolia: " + (addError.message || "wallet error"), true);
+        setWalletStatus("Gagal menambahkan Base Mainnet: " + (addError.message || "wallet error"), true);
       }
     } else {
       setWalletStatus(e && e.code === 4001 ? "Permintaan pindah jaringan ditolak di wallet." : "Gagal pindah jaringan: " + (e && e.message ? e.message : "wallet error"), true);
@@ -482,24 +482,24 @@ function abiWord(data, index) {
 function abiAddress(data) {
   return "0x" + abiWord(data, 0).slice(-40);
 }
-function allBaseSepoliaTokens() {
-  return BASE_SEPOLIA_TOKENS.concat(importedBaseSepoliaTokens);
+function allBaseMainnetTokens() {
+  return BASE_MAINNET_TOKENS.concat(importedBaseMainnetTokens);
 }
 function tokenByAddress(address) {
-  return allBaseSepoliaTokens().find((token) => token.address.toLowerCase() === String(address || "").toLowerCase());
+  return allBaseMainnetTokens().find((token) => token.address.toLowerCase() === String(address || "").toLowerCase());
 }
-function populateBaseSepoliaTokenSelectors() {
+function populateBaseMainnetTokenSelectors() {
   [$("poolTokenA"), $("poolTokenB")].forEach((select) => {
     select.replaceChildren();
-    allBaseSepoliaTokens().forEach((token) => {
+    allBaseMainnetTokens().forEach((token) => {
       const option = document.createElement("option");
       option.value = token.address;
       option.textContent = token.symbol + " · " + token.name + " · " + token.address.slice(0, 6) + "…" + token.address.slice(-4);
       select.appendChild(option);
     });
   });
-  $("poolTokenA").value = BASE_SEPOLIA_TOKENS[0].address;
-  $("poolTokenB").value = BASE_SEPOLIA_TOKENS[1].address;
+  $("poolTokenA").value = BASE_MAINNET_TOKENS[0].address;
+  $("poolTokenB").value = BASE_MAINNET_TOKENS[1].address;
   renderPoolTokenDetails();
 }
 function renderPoolTokenDetails() {
@@ -523,11 +523,11 @@ function renderPoolTokenDetails() {
 }
 function renderTokenPicker() {
   const search = $("tokenPickerSearch").value.trim().toLowerCase();
-  const matches = allBaseSepoliaTokens().filter((token) =>
+  const matches = allBaseMainnetTokens().filter((token) =>
     [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search)));
   const quick = $("tokenPickerQuick");
   quick.replaceChildren();
-  BASE_SEPOLIA_TOKENS.filter((token) => !search || [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search))).forEach((token) => {
+  BASE_MAINNET_TOKENS.filter((token) => !search || [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search))).forEach((token) => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = token.symbol;
@@ -589,7 +589,7 @@ function decodeAbiText(result) {
   const bytes = new Uint8Array(hex.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) || []);
   return new TextDecoder().decode(bytes).replace(/\0+$/g, "").trim();
 }
-async function importBaseSepoliaToken() {
+async function importBaseMainnetToken() {
   const button = $("addCustomTokenBtn");
   const address = $("customTokenAddress").value.trim();
   const expectedAccount = walletAddress;
@@ -601,56 +601,56 @@ async function importBaseSepoliaToken() {
   if (!walletProvider || !walletAddress) return setStatus("Hubungkan wallet terlebih dahulu.", true);
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return setStatus("Masukkan alamat kontrak EVM yang valid.", true);
   button.disabled = true;
-  setStatus("Memverifikasi kontrak dan metadata token di Base Sepolia…");
+  setStatus("Memverifikasi kontrak dan metadata token di Base Mainnet…");
   try {
-    await currentBaseSepoliaAccount(expectedAccount);
+    await currentBaseMainnetAccount(expectedAccount);
     const code = await walletProvider.request({ method: "eth_getCode", params: [address, "latest"] });
-    if (!code || /^0x0*$/i.test(code)) throw new Error("Alamat tersebut bukan kontrak yang terpasang di Base Sepolia.");
+    if (!code || /^0x0*$/i.test(code)) throw new Error("Alamat tersebut bukan kontrak yang terpasang di Base Mainnet.");
     const known = tokenByAddress(address);
     if (known) {
       setStatus(known.symbol + " sudah ada di daftar token. Pilih token itu dari menu.");
       return;
     }
     const [symbolResult, nameResult, decimalsResult] = await Promise.all([
-      baseSepoliaCall(address, "0x95d89b41").catch(() => null),
-      baseSepoliaCall(address, "0x06fdde03").catch(() => null),
-      baseSepoliaCall(address, "0x313ce567"),
+      baseMainnetCall(address, "0x95d89b41").catch(() => null),
+      baseMainnetCall(address, "0x06fdde03").catch(() => null),
+      baseMainnetCall(address, "0x313ce567"),
     ]);
     const decimals = Number(BigInt("0x" + abiWord(decimalsResult, 0)));
     if (!Number.isInteger(decimals) || decimals > 36) throw new Error("Decimals token tidak valid atau di luar batas dukungan.");
     const [balanceResult, allowanceResult] = await Promise.all([
-      baseSepoliaCall(address, "0x70a08231" + addressAbiWord(expectedAccount)),
-      baseSepoliaCall(address, "0xdd62ed3e" + addressAbiWord(expectedAccount) + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER)),
+      baseMainnetCall(address, "0x70a08231" + addressAbiWord(expectedAccount)),
+      baseMainnetCall(address, "0xdd62ed3e" + addressAbiWord(expectedAccount) + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER)),
     ]);
     abiWord(balanceResult, 0);
     abiWord(allowanceResult, 0);
-    await currentBaseSepoliaAccount(expectedAccount);
+    await currentBaseMainnetAccount(expectedAccount);
     const symbol = symbolResult ? decodeAbiText(symbolResult) : "";
     const name = nameResult ? decodeAbiText(nameResult) : "";
     const token = { symbol: symbol || "TOKEN", name: name || "Imported token", address, decimals };
-    importedBaseSepoliaTokens.push(token);
+    importedBaseMainnetTokens.push(token);
     const previousA = $("poolTokenA").value;
     const previousB = $("poolTokenB").value;
-    populateBaseSepoliaTokenSelectors();
+    populateBaseMainnetTokenSelectors();
     $("poolTokenA").value = previousA;
     $("poolTokenB").value = previousB;
     renderPoolTokenDetails();
     $("customTokenAddress").value = "";
     setStatus("Token berhasil diverifikasi dan ditambahkan untuk tab ini. Pilih token dari menu.");
   } catch (e) {
-    setStatus(e && e.message ? e.message : "Gagal memverifikasi token pada RPC Base Sepolia.", true);
+    setStatus(e && e.message ? e.message : "Gagal memverifikasi token pada RPC Base Mainnet.", true);
   } finally {
     button.disabled = false;
   }
 }
-async function baseSepoliaCall(to, data) {
+async function baseMainnetCall(to, data) {
   return walletProvider.request({ method: "eth_call", params: [{ to, data }, "latest"] });
 }
-async function checkBaseSepoliaPool() {
+async function checkBaseMainnetPool() {
   const button = $("poolCheckBtn");
-  baseSepoliaPoolContext = null;
+  baseMainnetPoolContext = null;
   $("poolQuoteBtn").disabled = true;
-  clearBaseSepoliaSwapQuote("Pool sedang diperiksa ulang. Buat quote baru setelah pemeriksaan selesai.");
+  clearBaseMainnetSwapQuote("Pool sedang diperiksa ulang. Buat quote baru setelah pemeriksaan selesai.");
   $("poolQuoteResult").textContent = "Periksa pool terlebih dahulu untuk mengaktifkan quote.";
   const tokenA = $("poolTokenA").value.trim();
   const tokenB = $("poolTokenB").value.trim();
@@ -662,39 +662,39 @@ async function checkBaseSepoliaPool() {
   if (tokenA.toLowerCase() === tokenB.toLowerCase()) return setPoolCheckResult("Token A dan Token B harus berbeda.", true);
   if (![500, 3000, 10000].includes(fee)) return setPoolCheckResult("Fee tier tidak valid.", true);
   button.disabled = true;
-  setPoolCheckResult("Memeriksa chain dan factory Uniswap V3 Base Sepolia…");
+  setPoolCheckResult("Memeriksa chain dan factory Uniswap V3 Base Mainnet…");
   try {
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
-    if (walletChainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID) {
+    if (walletChainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID) {
       renderBrowserWallet();
-      throw new Error("Pindahkan wallet ke Base Sepolia sebelum memeriksa pool.");
+      throw new Error("Pindahkan wallet ke Base Mainnet sebelum memeriksa pool.");
     }
     const factoryData = "0x1698ee82" + addressAbiWord(tokenA) + addressAbiWord(tokenB) + fee.toString(16).padStart(64, "0");
-    const poolResult = await baseSepoliaCall(BASE_SEPOLIA_UNISWAP_V3_FACTORY, factoryData);
+    const poolResult = await baseMainnetCall(BASE_MAINNET_UNISWAP_V3_FACTORY, factoryData);
     const poolAddress = abiAddress(poolResult);
     if (/^0x0{40}$/i.test(poolAddress)) {
-      baseSepoliaPoolContext = null;
+      baseMainnetPoolContext = null;
       $("poolQuoteBtn").disabled = true;
-      setPoolCheckResult("Pool tidak ditemukan untuk pasangan token dan fee tier ini pada factory Uniswap V3 Base Sepolia.");
+      setPoolCheckResult("Pool tidak ditemukan untuk pasangan token dan fee tier ini pada factory Uniswap V3 Base Mainnet.");
       return;
     }
     const [token0Result, token1Result, slot0Result, liquidityResult] = await Promise.all([
-      baseSepoliaCall(poolAddress, "0x0dfe1681"),
-      baseSepoliaCall(poolAddress, "0xd21220a7"),
-      baseSepoliaCall(poolAddress, "0x3850c7bd"),
-      baseSepoliaCall(poolAddress, "0x1a686502"),
+      baseMainnetCall(poolAddress, "0x0dfe1681"),
+      baseMainnetCall(poolAddress, "0xd21220a7"),
+      baseMainnetCall(poolAddress, "0x3850c7bd"),
+      baseMainnetCall(poolAddress, "0x1a686502"),
     ]);
     const token0 = abiAddress(token0Result);
     const token1 = abiAddress(token1Result);
     const [decimals0Result, decimals1Result] = await Promise.all([
-      baseSepoliaCall(token0, "0x313ce567"),
-      baseSepoliaCall(token1, "0x313ce567"),
+      baseMainnetCall(token0, "0x313ce567"),
+      baseMainnetCall(token1, "0x313ce567"),
     ]);
     const decimals0 = Number(BigInt("0x" + abiWord(decimals0Result, 0)));
     const decimals1 = Number(BigInt("0x" + abiWord(decimals1Result, 0)));
     if (decimals0 > 36 || decimals1 > 36) throw new Error("Decimals token di luar batas yang didukung.");
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
-    if (walletChainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID) throw new Error("Jaringan berubah saat pemeriksaan. Ulangi di Base Sepolia.");
+    if (walletChainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID) throw new Error("Jaringan berubah saat pemeriksaan. Ulangi di Base Mainnet.");
     const slot0Body = String(slot0Result || "").replace(/^0x/, "");
     const sqrtPriceX96 = BigInt("0x" + abiWord(slot0Result, 0));
     const tick = Number(BigInt.asIntN(24, BigInt("0x" + abiWord(slot0Result, 1))));
@@ -712,8 +712,8 @@ async function checkBaseSepoliaPool() {
     if ($("poolTokenA").value.toLowerCase() !== tokenA.toLowerCase() || $("poolTokenB").value.toLowerCase() !== tokenB.toLowerCase() || Number($("poolFeeTier").value) !== fee) {
       throw new Error("Pilihan token atau fee tier berubah saat pemeriksaan. Periksa pool kembali.");
     }
-    await currentBaseSepoliaAccount(checkAccount);
-    baseSepoliaPoolContext = { tokenA: tokenA.toLowerCase(), tokenB: tokenB.toLowerCase(), fee, poolAddress, token0, token1, decimals0, decimals1, spotPrice };
+    await currentBaseMainnetAccount(checkAccount);
+    baseMainnetPoolContext = { tokenA: tokenA.toLowerCase(), tokenB: tokenB.toLowerCase(), fee, poolAddress, token0, token1, decimals0, decimals1, spotPrice };
     const quoteReady = spotPrice > 0 && rawLiquidity > 0n;
     $("poolQuoteBtn").disabled = !quoteReady;
     $("poolQuoteResult").textContent = quoteReady ? "Pool siap untuk quote swap indikatif." : "Pool belum memiliki harga/liquidity aktif; quote belum tersedia.";
@@ -753,16 +753,16 @@ function tokenUnitsToDecimal(units, decimals) {
   const visible = fraction.slice(0, Math.min(decimals, 18)).replace(/0+$/, "");
   return visible ? whole.toString() + "." + visible : whole.toString();
 }
-async function quoteBaseSepoliaSwap() {
+async function quoteBaseMainnetSwap() {
   const button = $("poolQuoteBtn");
-  const context = baseSepoliaPoolContext;
-  clearBaseSepoliaSwapQuote("Quote sedang dibuat.");
+  const context = baseMainnetPoolContext;
+  clearBaseMainnetSwapQuote("Quote sedang dibuat.");
   if (!context) return setPoolQuoteResult("Periksa pool terlebih dahulu.", true);
   const tokenA = $("poolTokenA").value.trim().toLowerCase();
   const tokenB = $("poolTokenB").value.trim().toLowerCase();
   const fee = Number($("poolFeeTier").value);
   if (tokenA !== context.tokenA || tokenB !== context.tokenB || fee !== context.fee) {
-    baseSepoliaPoolContext = null;
+    baseMainnetPoolContext = null;
     button.disabled = true;
     return setPoolQuoteResult("Pasangan atau fee tier berubah. Periksa ulang pool terlebih dahulu.", true);
   }
@@ -783,18 +783,18 @@ async function quoteBaseSepoliaSwap() {
   }
   if (![50, 100, 200, 500].includes(slippageBps)) return setPoolQuoteResult("Batas slippage tidak valid.", true);
   button.disabled = true;
-  setPoolQuoteResult("Meminta quote exact-input ke QuoterV2 Base Sepolia…");
+  setPoolQuoteResult("Meminta quote exact-input ke QuoterV2 Base Mainnet…");
   try {
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
-    if (walletChainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID) throw new Error("Wallet harus berada di Base Sepolia.");
+    if (walletChainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID) throw new Error("Wallet harus berada di Base Mainnet.");
     const quoteData = "0xc6a5026a" + addressAbiWord(tokenIn) + addressAbiWord(tokenOut) +
       amountIn.toString(16).padStart(64, "0") + fee.toString(16).padStart(64, "0") + "0".repeat(64);
     const balanceData = "0x70a08231" + addressAbiWord(quoteAccount);
-    const allowanceData = "0xdd62ed3e" + addressAbiWord(quoteAccount) + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER);
+    const allowanceData = "0xdd62ed3e" + addressAbiWord(quoteAccount) + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER);
     const [quoteResult, balanceResult, allowanceResult] = await Promise.all([
-      baseSepoliaCall(BASE_SEPOLIA_UNISWAP_V3_QUOTER, quoteData),
-      baseSepoliaCall(tokenIn, balanceData),
-      baseSepoliaCall(tokenIn, allowanceData),
+      baseMainnetCall(BASE_MAINNET_UNISWAP_V3_QUOTER, quoteData),
+      baseMainnetCall(tokenIn, balanceData),
+      baseMainnetCall(tokenIn, allowanceData),
     ]);
     const amountOut = BigInt("0x" + abiWord(quoteResult, 0));
     if (amountOut <= 0n) throw new Error("Quote menghasilkan output nol; swap dibatalkan.");
@@ -803,11 +803,11 @@ async function quoteBaseSepoliaSwap() {
     const tokenBalance = BigInt("0x" + abiWord(balanceResult, 0));
     const allowance = BigInt("0x" + abiWord(allowanceResult, 0));
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
-    if (walletChainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID || walletAddress.toLowerCase() !== quoteAccount) {
+    if (walletChainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID || walletAddress.toLowerCase() !== quoteAccount) {
       throw new Error("Jaringan atau akun berubah saat quote. Ulangi dari awal.");
     }
-    await currentBaseSepoliaAccount(quoteAccount);
-    if (baseSepoliaPoolContext !== context || $("poolQuoteAmount").value.trim() !== amountText ||
+    await currentBaseMainnetAccount(quoteAccount);
+    if (baseMainnetPoolContext !== context || $("poolQuoteAmount").value.trim() !== amountText ||
         $("poolQuoteDirection").value !== direction || Number($("swapSlippage").value) !== slippageBps) {
       throw new Error("Pool atau input berubah saat quote. Jalankan quote kembali.");
     }
@@ -820,14 +820,14 @@ async function quoteBaseSepoliaSwap() {
     const expectedAtSpot = amountInNumber * spotRate;
     const impact = expectedAtSpot > 0 && Number.isFinite(expectedAtSpot) && Number.isFinite(amountOutNumber) ? (1 - amountOutNumber / expectedAtSpot) * 100 : NaN;
     const impactText = Number.isFinite(impact) ? impact.toFixed(4) + "% versus spot" : "tidak tersedia";
-    baseSepoliaSwapQuote = { context, tokenIn, tokenOut, fee, amountIn, amountOut, minAmountOut, inputDecimals,
+    baseMainnetSwapQuote = { context, tokenIn, tokenOut, fee, amountIn, amountOut, minAmountOut, inputDecimals,
       outputDecimals, amountText, slippageBps, account: quoteAccount, tokenBalance, allowance, createdAt: Date.now() };
     const enoughBalance = tokenBalance >= amountIn;
     const enoughAllowance = allowance >= amountIn;
-    $("swapApproveBtn").disabled = !enoughBalance || enoughAllowance;
-    $("swapExecuteBtn").disabled = !enoughBalance || !enoughAllowance;
-    setSwapApprovalStatus(!enoughBalance ? "Saldo token input tidak cukup untuk jumlah ini." : enoughAllowance ?
-      "Allowance cukup. Quote berlaku 2 menit; lanjutkan swap bila detailnya benar." :
+    updateMainnetSwapButtons();
+    setSwapApprovalStatus(!enoughBalance ? "Saldo token input tidak cukup untuk jumlah ini." : !$("mainnetRiskAcknowledged").checked ?
+      "Baca peringatan dan centang pengakuan risiko mainnet sebelum approval atau swap." : enoughAllowance ?
+      "Allowance cukup. Quote berlaku 2 menit; periksa detail lalu lanjutkan." :
       "Saldo cukup. Approve akan memberi izin tepat sebesar jumlah input ke router tetap.");
     const tokenInInfo = tokenByAddress(tokenIn);
     const tokenOutInfo = tokenByAddress(tokenOut);
@@ -835,29 +835,29 @@ async function quoteBaseSepoliaSwap() {
       "Input: " + amountText + " " + (tokenInInfo ? tokenInInfo.symbol : "token") + " · output quote ≈ " + amountOutText + " " + (tokenOutInfo ? tokenOutInfo.symbol : "token") +
       "\nMinimum output (slippage " + (slippageBps / 100).toFixed(2) + "%): " + minOutText + " " + (tokenOutInfo ? tokenOutInfo.symbol : "token") +
       "\nPrice impact indikatif: " + impactText + "\nGas estimate QuoterV2: " + gasEstimate.toLocaleString("en-US") + " units (bukan biaya final)" +
-      "\nRouter: Uniswap SwapRouter02 · quote berlaku 2 menit · transaksi hanya di Base Sepolia.",
+      "\nRouter: Uniswap SwapRouter02 · quote berlaku 2 menit · transaksi hanya di Base Mainnet.",
     );
   } catch (e) {
-    clearBaseSepoliaSwapQuote("Quote gagal. Buat quote baru sebelum transaksi.");
+    clearBaseMainnetSwapQuote("Quote gagal. Buat quote baru sebelum transaksi.");
     setPoolQuoteResult(e && e.message ? e.message : "QuoterV2 gagal menghitung quote untuk pool/jumlah ini.", true);
   } finally {
-    button.disabled = !baseSepoliaPoolContext;
+    button.disabled = !baseMainnetPoolContext;
     renderBrowserWallet();
   }
 }
-async function currentBaseSepoliaAccount(expectedAccount) {
+async function currentBaseMainnetAccount(expectedAccount) {
   const chainId = String(await walletProvider.request({ method: "eth_chainId" }));
   const accounts = await walletProvider.request({ method: "eth_accounts" });
-  if (chainId.toLowerCase() !== BASE_SEPOLIA_CHAIN_ID) throw new Error("Transaksi hanya diizinkan di Base Sepolia (84532).");
+  if (chainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID) throw new Error("Transaksi hanya diizinkan di Base Mainnet (8453).");
   const current = Array.isArray(accounts) ? (accounts[0] || "") : "";
   if (!current || current.toLowerCase() !== expectedAccount.toLowerCase()) throw new Error("Akun wallet berubah atau tidak lagi terhubung. Buat quote baru.");
   return current;
 }
 function requireFreshSwapQuote() {
-  const q = baseSepoliaSwapQuote;
-  if (!q || !baseSepoliaPoolContext || q.context !== baseSepoliaPoolContext) throw new Error("Buat quote swap baru terlebih dahulu.");
+  const q = baseMainnetSwapQuote;
+  if (!q || !baseMainnetPoolContext || q.context !== baseMainnetPoolContext) throw new Error("Buat quote swap baru terlebih dahulu.");
   if (Date.now() - q.createdAt > 120000) {
-    clearBaseSepoliaSwapQuote("Quote kedaluwarsa setelah 2 menit. Buat quote baru.");
+    clearBaseMainnetSwapQuote("Quote kedaluwarsa setelah 2 menit. Buat quote baru.");
     throw new Error("Quote kedaluwarsa. Buat quote baru.");
   }
   if (q.account !== walletAddress.toLowerCase() || q.amountText !== $("poolQuoteAmount").value.trim() ||
@@ -865,33 +865,34 @@ function requireFreshSwapQuote() {
       q.slippageBps !== Number($("swapSlippage").value)) throw new Error("Akun, jumlah, arah, atau slippage berubah. Buat quote baru.");
   return q;
 }
-async function sendBaseSepoliaTransaction(to, data, description, expectedAccount) {
-  const from = await currentBaseSepoliaAccount(expectedAccount);
+async function sendBaseMainnetTransaction(to, data, description, expectedAccount) {
+  if (!$("mainnetRiskAcknowledged").checked) throw new Error("Centang pengakuan risiko Base Mainnet sebelum mengirim transaksi dengan aset nyata.");
+  const from = await currentBaseMainnetAccount(expectedAccount);
   const tx = { from, to, data, value: "0x0" };
   const gasEstimate = BigInt(await walletProvider.request({ method: "eth_estimateGas", params: [tx] }));
   const gasLimit = gasEstimate * 120n / 100n;
   const gasPrice = BigInt(await walletProvider.request({ method: "eth_gasPrice" }));
   const gasBalance = BigInt(await walletProvider.request({ method: "eth_getBalance", params: [from, "latest"] }));
   const maxGasCost = gasLimit * gasPrice;
-  if (gasBalance < maxGasCost) throw new Error("Saldo ETH Base Sepolia tidak cukup untuk estimasi gas maksimum " + weiToEth("0x" + maxGasCost.toString(16)) + " ETH.");
-  const summary = description + "\n\nJaringan: Base Sepolia (84532)\nDari: " + from + "\nKe: " + to +
+  if (gasBalance < maxGasCost) throw new Error("Saldo ETH Base Mainnet tidak cukup untuk estimasi gas maksimum " + weiToEth("0x" + maxGasCost.toString(16)) + " ETH.");
+  const summary = "ASET NYATA · BASE MAINNET (8453) · TRANSAKSI TIDAK DAPAT DIBATALKAN\n\n" + description + "\n\nJaringan: Base Mainnet (8453)\nDari: " + from + "\nKe: " + to +
     "\nGas limit: " + gasLimit.toString() + " · gas price: " + gasPrice.toString() + " wei" +
     "\nMaksimum biaya gas indikatif: " + weiToEth("0x" + maxGasCost.toString(16)) + " ETH\n\nLanjutkan ke konfirmasi wallet?";
   if (!window.confirm(summary)) throw new Error("Transaksi dibatalkan sebelum dibuka di wallet.");
-  await currentBaseSepoliaAccount(expectedAccount);
-  if (baseSepoliaSwapQuote && baseSepoliaSwapQuote.account === expectedAccount.toLowerCase()) requireFreshSwapQuote();
+  await currentBaseMainnetAccount(expectedAccount);
+  if (baseMainnetSwapQuote && baseMainnetSwapQuote.account === expectedAccount.toLowerCase()) requireFreshSwapQuote();
   const hash = await walletProvider.request({ method: "eth_sendTransaction", params: [{ ...tx,
-    gas: "0x" + gasLimit.toString(16), gasPrice: "0x" + gasPrice.toString(16), chainId: BASE_SEPOLIA_CHAIN_ID }] });
+    gas: "0x" + gasLimit.toString(16), gasPrice: "0x" + gasPrice.toString(16), chainId: BASE_MAINNET_CHAIN_ID }] });
   if (!/^0x[a-fA-F0-9]{64}$/.test(String(hash))) throw new Error("Wallet tidak mengembalikan transaction hash yang valid.");
   setSwapTxResult("Transaksi dikirim · menunggu konfirmasi jaringan…", false, hash);
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const receipt = await walletProvider.request({ method: "eth_getTransactionReceipt", params: [hash] });
     if (receipt) {
       if (receipt.status && BigInt(receipt.status) === 0n) {
-        setSwapTxResult("Transaksi gagal (reverted) di Base Sepolia. Periksa receipt.", true, hash);
+        setSwapTxResult("Transaksi gagal (reverted) di Base Mainnet. Periksa receipt.", true, hash);
         throw new Error("Transaksi masuk chain tetapi gagal (reverted). Lihat receipt di BaseScan.");
       }
-      setSwapTxResult("Transaksi terkonfirmasi di Base Sepolia.", false, hash);
+      setSwapTxResult("Transaksi terkonfirmasi di Base Mainnet.", false, hash);
       return { hash, receipt };
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -899,60 +900,61 @@ async function sendBaseSepoliaTransaction(to, data, description, expectedAccount
   return { hash, receipt: null };
 }
 async function readSwapAllowance(q) {
-  const result = await baseSepoliaCall(q.tokenIn, "0xdd62ed3e" + addressAbiWord(q.account) + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER));
+  const result = await baseMainnetCall(q.tokenIn, "0xdd62ed3e" + addressAbiWord(q.account) + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER));
   return BigInt("0x" + abiWord(result, 0));
 }
-async function approveBaseSepoliaSwap() {
+async function approveBaseMainnetSwap() {
   const button = $("swapApproveBtn");
   button.disabled = true;
   try {
     const q = requireFreshSwapQuote();
-    await currentBaseSepoliaAccount(q.account);
-    const balanceResult = await baseSepoliaCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account));
+    await currentBaseMainnetAccount(q.account);
+    const balanceResult = await baseMainnetCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account));
     if (BigInt("0x" + abiWord(balanceResult, 0)) < q.amountIn) throw new Error("Saldo token input tidak lagi cukup.");
     let allowance = await readSwapAllowance(q);
     if (allowance >= q.amountIn) {
       q.allowance = allowance;
-      setSwapApprovalStatus("Allowance sudah cukup; tombol swap siap digunakan.");
-      $("swapExecuteBtn").disabled = false;
+      setSwapApprovalStatus("Allowance sudah cukup; periksa detail quote lalu swap.");
+      updateMainnetSwapButtons();
       return;
     }
     if (allowance > 0n) {
       setSwapApprovalStatus("Allowance lama perlu di-reset ke nol terlebih dahulu.");
-      const reset = await sendBaseSepoliaTransaction(q.tokenIn, "0x095ea7b3" + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER) + "0".repeat(64),
+      const reset = await sendBaseMainnetTransaction(q.tokenIn, "0x095ea7b3" + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER) + "0".repeat(64),
         "RESET APPROVAL · izin token lama akan diubah menjadi 0.", q.account);
       if (!reset.receipt) throw new Error("Reset approval masih pending. Tunggu konfirmasi lalu buat quote baru.");
       allowance = await readSwapAllowance(q);
       if (allowance !== 0n) throw new Error("Allowance belum menjadi nol setelah reset.");
     }
-    const approvalData = "0x095ea7b3" + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER) + q.amountIn.toString(16).padStart(64, "0");
-    const approved = await sendBaseSepoliaTransaction(q.tokenIn, approvalData,
-      "APPROVAL TOKEN · jumlah tepat " + q.amountText + " dari token " + q.tokenIn + " · router Uniswap SwapRouter02 " + BASE_SEPOLIA_UNISWAP_V3_ROUTER, q.account);
+    const approvalData = "0x095ea7b3" + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER) + q.amountIn.toString(16).padStart(64, "0");
+    const approved = await sendBaseMainnetTransaction(q.tokenIn, approvalData,
+      "APPROVAL TOKEN · jumlah tepat " + q.amountText + " dari token " + q.tokenIn + " · router Uniswap SwapRouter02 " + BASE_MAINNET_UNISWAP_V3_ROUTER, q.account);
     if (!approved.receipt) {
       setSwapApprovalStatus("Approval dikirim tetapi masih pending. Tunggu receipt; jangan kirim swap dulu.", true);
       return;
     }
     const updatedAllowance = await readSwapAllowance(q);
-    const updatedBalance = BigInt("0x" + abiWord(await baseSepoliaCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account)), 0));
+    const updatedBalance = BigInt("0x" + abiWord(await baseMainnetCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account)), 0));
     if (updatedAllowance < q.amountIn || updatedBalance < q.amountIn) throw new Error("Approval atau saldo tidak mencukupi setelah konfirmasi. Buat quote baru.");
     q.allowance = updatedAllowance;
-    $("swapExecuteBtn").disabled = false;
+    updateMainnetSwapButtons();
     setSwapApprovalStatus("Approval terkonfirmasi untuk jumlah tepat. Periksa kembali quote, lalu klik Swap.");
   } catch (e) {
     setSwapApprovalStatus(e && e.message ? e.message : "Approval gagal.", true);
     if (e && e.code === 4001) setSwapTxResult("Permintaan transaksi ditolak di wallet.", true);
   } finally {
-    button.disabled = !baseSepoliaSwapQuote || !walletAddress || baseSepoliaSwapQuote.allowance >= baseSepoliaSwapQuote.amountIn;
+    updateMainnetSwapButtons();
   }
 }
-async function executeBaseSepoliaSwap() {
+async function executeBaseMainnetSwap() {
   const button = $("swapExecuteBtn");
   button.disabled = true;
   try {
     const q = requireFreshSwapQuote();
-    await currentBaseSepoliaAccount(q.account);
+    if (!$("mainnetRiskAcknowledged").checked) throw new Error("Centang pengakuan risiko Base Mainnet sebelum swap.");
+    await currentBaseMainnetAccount(q.account);
     const [balanceResult, allowance] = await Promise.all([
-      baseSepoliaCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account)), readSwapAllowance(q),
+      baseMainnetCall(q.tokenIn, "0x70a08231" + addressAbiWord(q.account)), readSwapAllowance(q),
     ]);
     const balance = BigInt("0x" + abiWord(balanceResult, 0));
     if (balance < q.amountIn) throw new Error("Saldo token input tidak lagi cukup; buat quote baru.");
@@ -963,23 +965,23 @@ async function executeBaseSepoliaSwap() {
     const calldata = "0x04e45aaf" + addressAbiWord(q.tokenIn) + addressAbiWord(q.tokenOut) +
       q.fee.toString(16).padStart(64, "0") + addressAbiWord(q.account) + q.amountIn.toString(16).padStart(64, "0") +
       q.minAmountOut.toString(16).padStart(64, "0") + "0".repeat(64);
-    const result = await sendBaseSepoliaTransaction(BASE_SEPOLIA_UNISWAP_V3_ROUTER, calldata,
+    const result = await sendBaseMainnetTransaction(BASE_MAINNET_UNISWAP_V3_ROUTER, calldata,
       "SWAP ERC-20 EXACT-INPUT · token input " + q.tokenIn + " · jumlah " + q.amountText +
       " · token output " + q.tokenOut + " · output quote " + tokenUnitsToDecimal(q.amountOut, q.outputDecimals) +
       " · minimum output " + tokenUnitsToDecimal(q.minAmountOut, q.outputDecimals) +
       " · slippage maksimum " + (q.slippageBps / 100).toFixed(2) + "% · pool " + q.context.poolAddress +
       " · fee tier " + q.fee + " · router tetap Uniswap SwapRouter02.", q.account);
-    baseSepoliaSwapQuote = null;
+    baseMainnetSwapQuote = null;
     $("swapApproveBtn").disabled = true;
     $("swapExecuteBtn").disabled = true;
-    setSwapTxResult(result.receipt ? "Swap terkonfirmasi di Base Sepolia." : "Swap sudah dikirim tetapi receipt belum terlihat. Periksa BaseScan sebelum mencoba lagi.", !result.receipt, result.hash);
+    setSwapTxResult(result.receipt ? "Swap terkonfirmasi di Base Mainnet." : "Swap sudah dikirim tetapi receipt belum terlihat. Periksa BaseScan sebelum mencoba lagi.", !result.receipt, result.hash);
     setSwapApprovalStatus("Quote dibatalkan setelah transaksi dikirim. Buat quote baru untuk swap berikutnya.");
     await refreshBrowserWallet();
   } catch (e) {
     setSwapApprovalStatus(e && e.message ? e.message : "Swap gagal.", true);
     if (e && e.code === 4001) setSwapTxResult("Permintaan swap ditolak di wallet.", true);
   } finally {
-    if (baseSepoliaSwapQuote) $("swapExecuteBtn").disabled = false;
+    updateMainnetSwapButtons();
   }
 }
 function setPoolQuoteResult(message, isError) {
@@ -998,15 +1000,24 @@ function setSwapTxResult(message, isError, hash) {
   el.textContent = message;
   el.classList.toggle("error", !!isError);
   if (hash && /^0x[a-fA-F0-9]{64}$/.test(hash)) {
-    link.href = "https://sepolia.basescan.org/tx/" + hash;
+    link.href = "https://basescan.org/tx/" + hash;
     link.hidden = false;
   } else {
     link.removeAttribute("href");
     link.hidden = true;
   }
 }
-function clearBaseSepoliaSwapQuote(message) {
-  baseSepoliaSwapQuote = null;
+function updateMainnetSwapButtons() {
+  const quote = baseMainnetSwapQuote;
+  const acknowledged = $("mainnetRiskAcknowledged").checked;
+  const fresh = quote && Date.now() - quote.createdAt <= 120000 && quote.account === walletAddress.toLowerCase() && walletChainId.toLowerCase() === BASE_MAINNET_CHAIN_ID;
+  const enoughBalance = fresh && quote.tokenBalance >= quote.amountIn;
+  const enoughAllowance = fresh && quote.allowance >= quote.amountIn;
+  $("swapApproveBtn").disabled = !acknowledged || !enoughBalance || enoughAllowance;
+  $("swapExecuteBtn").disabled = !acknowledged || !enoughBalance || !enoughAllowance;
+}
+function clearBaseMainnetSwapQuote(message) {
+  baseMainnetSwapQuote = null;
   $("swapApproveBtn").disabled = true;
   $("swapExecuteBtn").disabled = true;
   setSwapApprovalStatus(message || "Quote invalid. Buat quote baru untuk melanjutkan.");
@@ -1021,8 +1032,8 @@ function initBrowserWallet() {
   }
   renderBrowserWallet();
   $("walletConnectBtn").addEventListener("click", connectBrowserWallet);
-  $("walletSwitchBtn").addEventListener("click", switchToBaseSepolia);
-  populateBaseSepoliaTokenSelectors();
+  $("walletSwitchBtn").addEventListener("click", switchToBaseMainnet);
+  populateBaseMainnetTokenSelectors();
   $("chooseTokenABtn").addEventListener("click", () => openTokenPicker("A"));
   $("chooseTokenBBtn").addEventListener("click", () => openTokenPicker("B"));
   $("tokenPickerSearch").addEventListener("input", renderTokenPicker);
@@ -1032,19 +1043,20 @@ function initBrowserWallet() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !$("tokenPickerModal").hidden) $("tokenPickerModal").hidden = true;
   });
-  $("poolCheckBtn").addEventListener("click", checkBaseSepoliaPool);
-  $("poolQuoteBtn").addEventListener("click", quoteBaseSepoliaSwap);
-  $("addCustomTokenBtn").addEventListener("click", importBaseSepoliaToken);
-  $("swapApproveBtn").addEventListener("click", approveBaseSepoliaSwap);
-  $("swapExecuteBtn").addEventListener("click", executeBaseSepoliaSwap);
+  $("poolCheckBtn").addEventListener("click", checkBaseMainnetPool);
+  $("poolQuoteBtn").addEventListener("click", quoteBaseMainnetSwap);
+  $("addCustomTokenBtn").addEventListener("click", importBaseMainnetToken);
+  $("swapApproveBtn").addEventListener("click", approveBaseMainnetSwap);
+  $("swapExecuteBtn").addEventListener("click", executeBaseMainnetSwap);
+  $("mainnetRiskAcknowledged").addEventListener("change", updateMainnetSwapButtons);
   const invalidatePoolCheck = () => {
-    baseSepoliaPoolContext = null;
+    baseMainnetPoolContext = null;
     $("poolQuoteBtn").disabled = true;
-    clearBaseSepoliaSwapQuote("Pasangan atau fee tier berubah. Periksa pool dan quote kembali.");
+    clearBaseMainnetSwapQuote("Pasangan atau fee tier berubah. Periksa pool dan quote kembali.");
     setPoolCheckResult("Pasangan token atau fee tier berubah. Periksa ulang pool.");
     setPoolQuoteResult("Pasangan atau fee tier berubah. Periksa ulang pool.");
   };
-  const invalidateSwapQuote = () => clearBaseSepoliaSwapQuote("Input berubah. Buat quote baru sebelum transaksi.");
+  const invalidateSwapQuote = () => clearBaseMainnetSwapQuote("Input berubah. Buat quote baru sebelum transaksi.");
   $("poolTokenA").addEventListener("change", () => { invalidatePoolCheck(); renderPoolTokenDetails(); });
   $("poolTokenB").addEventListener("change", () => { invalidatePoolCheck(); renderPoolTokenDetails(); });
   $("poolFeeTier").addEventListener("change", invalidatePoolCheck);

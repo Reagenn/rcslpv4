@@ -5,11 +5,13 @@ fitur**: setiap fitur beserta file frontend, file/endpoint/fungsi backend,
 dan sumber datanya.
 
 > **Batasan:** posisi LP, trade desk, saldo desk, fee, dan PnL tetap simulasi.
-> Modul swap browser dapat mengirim transaksi ERC-20 sungguhan **hanya di Base
-> Sepolia testnet**, setelah konfirmasi terpisah di wallet untuk approval dan
-> swap. Jangan gunakan aset bernilai nyata; aplikasi tidak membaca/menyimpan
-> private key dan tidak mengirimkannya ke server. Data yang tidak tersedia dari
-> sumber publik ditampilkan kosong atau dilabeli jujur, tidak dikarang.
+> Swap browser adalah transaksi ERC-20 sungguhan di **Base Mainnet (chain ID
+> 8453)** dan menggunakan aset nyata. Approval dan swap dikonfirmasi terpisah
+> di wallet; transaksi on-chain tidak dapat dibatalkan dan dapat menyebabkan
+> kehilangan dana. Periksa kontrak token, quote, chain, dan detail transaksi
+> sebelum menyetujui. Aplikasi tidak membaca/menyimpan private key dan tidak
+> mengirimkannya ke server. Data yang tidak tersedia dari sumber publik
+> ditampilkan kosong atau dilabeli jujur, tidak dikarang.
 
 ---
 
@@ -222,38 +224,38 @@ persisten di `data.json`. Frontend: `renderBalances()`,
 `renderTransactions()`, `doTrade()`, panel `#balancesPanel`. Backend:
 `POST /api/trade`, `defaultState()`, `saveState()`.
 
-Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Saat Base
-Sepolia (84532) aktif, UI membaca alamat/saldo native, pool, saldo token,
-allowance, dan quote melalui RPC wallet. Tombol pilih token membuka dialog
-pencarian nama/simbol/alamat dengan pilihan cepat WETH/USDC; token A/B dipilih
-tanpa mengetik alamat untuk aset bawaan. Daftar bisa ditambah dengan import
-alamat kontrak. Kode kontrak, decimals, balanceOf, dan allowance diperiksa
-lewat RPC Base Sepolia; label token tidak memverifikasi keaslian. Token import
-hanya disimpan selama tab terbuka. Alamat bawaan: WETH
+Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Fitur swap
+hanya aktif saat wallet berada di **Base Mainnet (8453)**. UI membaca
+alamat/saldo native, pool, saldo token, allowance, dan quote melalui RPC wallet.
+Pemilih token menyediakan WETH/USDC bawaan dan import alamat kontrak. Kode
+kontrak, decimals, balanceOf, dan allowance diperiksa di chain aktif; nama/simbol
+bukan verifikasi keaslian. Token import hanya disimpan selama tab terbuka.
+Alamat token bawaan: WETH
 `0x4200000000000000000000000000000000000006` (lihat [Base contract
-docs](https://docs.base.org/specifications/reference/base-contracts)) dan USDC
-`0x036CbD53842c5426634e7929541eC2318f3dCF7e` (lihat [Circle USDC
-addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)).
-Pemeriksa pool Uniswap V3 memakai factory
-`0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24`; quote exact-input memakai
-QuoterV2 `0xC5290058841028F1614F3A6F0F5816cAd0df5E27`. Router eksekusi tetap
-SwapRouter02 `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` (alamat Base Sepolia
-dari [deployment docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments)).
+docs](https://docs.base.org/specifications/reference/base-contracts)) dan
+USDC kanonis Base `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (lihat [Circle
+USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)).
 
-Untuk token ERC-20 testnet yang dipilih pengguna, tombol **Approve jumlah
-yang tepat** meminta transaksi approval ke router tersebut; allowance nonzero
-yang kurang dapat memerlukan transaksi reset ke nol dahulu. Tombol **Swap**
-menyusun exact-input dengan minimum output sesuai slippage 0,5/1/2/5%.
-Sebelum setiap transaksi, UI memeriksa chain, akun, saldo ETH untuk gas,
-estimasi gas, dan meminta konfirmasi aplikasi; wallet kemudian meminta
-konfirmasi signing sendiri. Quote kedaluwarsa setelah 2 menit dan input,
-akun, chain, atau slippage yang berubah membatalkannya. Hash dan status receipt
-ditampilkan dengan tautan BaseScan Sepolia. Tidak ada dukungan mainnet atau
-transaksi LP (mint/close/claim); saldo, posisi, dan trade di desk tetap
-simulasi. Alamat wallet hanya di memori frontend; tidak ada backend wallet.
-Frontend: `initBrowserWallet()`, `checkBaseSepoliaPool()`,
-`quoteBaseSepoliaSwap()`, `approveBaseSepoliaSwap()`,
-`executeBaseSepoliaSwap()`, panel `#walletPanel`.
+Pemeriksa pool memakai Uniswap V3 Factory Base
+`0x33128a8fC17869897dcE68Ed026d694621f6FDfD`; quote exact-input memakai
+QuoterV2 `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a`; eksekusi memakai
+SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481` (lihat [deployment
+docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments)).
+
+Untuk token ERC-20 Base Mainnet yang dipilih pengguna, tombol **Approve jumlah
+tepat** memberi allowance sebesar input saja; allowance lama yang nonzero dapat
+memerlukan reset ke nol, sebagai transaksi terpisah. Tombol **Swap** mengirim
+exact-input dengan minimum output sesuai slippage 0,5/1/2/5%. Sebelum transaksi,
+UI memeriksa chain, akun, saldo ETH untuk gas, dan estimasi gas, lalu meminta
+konfirmasi tambahan; wallet tetap meminta signing untuk setiap transaksi.
+Pengguna juga harus mencentang pengakuan risiko mainnet. Quote kedaluwarsa
+setelah 2 menit dan perubahan input/akun/chain/slippage membatalkannya. Hash
+receipt ditautkan ke BaseScan. **Approval maupun swap memakai aset nyata dan
+tidak dapat dibatalkan.** Posisi LP, trade, dan saldo di desk tetap simulasi;
+tidak ada transaksi LP (mint/close/claim). Alamat wallet hanya di memori
+frontend; tidak ada backend wallet. Frontend: `initBrowserWallet()`,
+`checkBaseMainnetPool()`, `quoteBaseMainnetSwap()`,
+`approveBaseMainnetSwap()`, `executeBaseMainnetSwap()`, panel `#walletPanel`.
 
 ### 5. Simulasi Meteora DLMM (Solana)
 Price bins + active bin, bin step, strategi Spot/Curve/Bid-Ask,

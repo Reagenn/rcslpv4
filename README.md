@@ -5,13 +5,15 @@ ulang sebagai proyek lokal Node.js dengan frontend dan backend terpisah.
 **Ini bukan salinan byte-per-byte dari file hosted** — fitur dan alurnya
 dibuat semirip mungkin.
 
-> ⚠️ **POSISI LP TETAP SIMULASI.** Saldo desk, trade desk, posisi LP, fee,
-> dan PnL bukan dana nyata. Modul swap browser mengirim transaksi ERC-20
-> sungguhan hanya di **Base Sepolia testnet**; approval dan swap dikonfirmasi
-> terpisah melalui wallet. Gunakan token testnet, jangan aset bernilai nyata.
-> Aplikasi menolak jaringan selain Base Sepolia, tidak membaca/menyimpan private
-> key, dan tidak mengirimkannya ke server. Data pasar berasal dari API publik
-> read-only: DexScreener, Meteora DLMM Data API, dan GoPlus.
+> ⚠️ **POSISI LP TETAP SIMULASI; SWAP TIDAK.** Saldo desk, trade desk,
+> posisi LP, fee, dan PnL bukan dana nyata. Modul swap browser mengirim transaksi
+> ERC-20 sungguhan di **Base Mainnet (chain ID 8453)** dan memakai aset nyata.
+> Approval dan swap adalah transaksi terpisah, masing-masing perlu konfirmasi
+> wallet; transaksi on-chain tidak dapat dibatalkan. Periksa chain, alamat
+> kontrak, quote, dan detail wallet dengan teliti. Aplikasi menolak jaringan
+> selain Base Mainnet, tidak membaca/menyimpan private key, dan tidak mengirimkannya
+> ke server. Data pasar berasal dari API publik read-only: DexScreener, Meteora
+> DLMM Data API, dan GoPlus.
 >
 > **Phase 3:** akun dengan desk privat, profil publik, follow, dan leaderboard
 > opt-in (seluruh angka leaderboard simulasi). Posisi dan net worth tidak dibagikan
