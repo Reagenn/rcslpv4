@@ -273,7 +273,14 @@ async function api(pathname, options) {
   const res = await fetch(pathname, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401 && currentAccount && !pathname.startsWith("/api/auth/")) {
+      stopRealtime();
+      currentAccount = null;
+      deskState = null;
+      showAuth("Sesi berakhir. Masuk kembali untuk membuka desk.");
+    }
     const err = new Error(data.error || "HTTP " + res.status);
+    err.status = res.status;
     err.friendly = data.error || "Terjadi kesalahan. Coba lagi nanti.";
     throw err;
   }
@@ -3284,6 +3291,159 @@ function fillChainSelects() {
   $("leaderChain").innerHTML = CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
   $("discChain").innerHTML = '<option value="ALL">Semua</option>' + CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
 }
+let currentAccount = null;
+let authRegisterMode = false;
+function setAuthMode(register) {
+  authRegisterMode = register;
+  $("authTitle").textContent = register ? "Buat akun" : "Masuk ke desk";
+  $("authSubmit").textContent = register ? "Daftar" : "Masuk";
+  $("displayNameField").hidden = !register;
+  $("authPassword").autocomplete = register ? "new-password" : "current-password";
+  $("authModeToggle").textContent = register ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar";
+  $("authError").textContent = "";
+}
+function showAuth(message) {
+  $("authScreen").hidden = false;
+  $("accountBar").hidden = true;
+  $("socialScreen").hidden = true;
+  $("profileEditor").hidden = true;
+  $("app").hidden = true;
+  if (message) $("authError").textContent = message;
+}
+function publicProfileMarkup(profile, followed) {
+  const positions = (profile.positions || []).map((position) => '<article class="social-item"><h3>' + esc(position.symbol || "LP") + ' · ' + esc(position.chain || "") + '</h3><p>' + esc(position.product || "") + ' · ' + esc(position.status || "") + '</p><p>Entry ' + esc(String(position.entryPrice ?? "—")) + ' · Current ' + esc(String(position.currentPrice ?? "—")) + '</p><p>Nilai ' + fmtMoney(position.positionValue) + ' · PnL ' + fmtMoney(position.netPnl) + '</p></article>').join("");
+  const avatar = profile.avatarUrl ? '<img class="social-avatar" src="' + esc(profile.avatarUrl) + '" alt="Avatar ' + esc(profile.displayName) + '" />' : '<div class="social-avatar" aria-hidden="true"></div>';
+  return '<div class="social-banner"></div><div class="social-user">' + avatar + '<div><h1>' + esc(profile.displayName || profile.username) + '</h1><p class="muted">@' + esc(profile.username) + ' · ' + Number(profile.followers || 0) + ' followers</p></div></div>' +
+    (profile.discordName ? '<p>Discord: ' + esc(profile.discordName) + '</p>' : "") + (profile.bio ? '<p>' + esc(profile.bio) + '</p>' : "") +
+    (profile.netWorth != null ? '<article class="social-item"><strong>Net worth simulasi: ' + fmtMoney(profile.netWorth) + '</strong><p class="muted small">Simulasi, bukan performa atau dana nyata.</p></article>' : "") +
+    (profile.positions ? '<h2>Posisi yang dibagikan</h2><p class="muted small">Semua posisi di bawah ini simulasi.</p><div class="social-grid">' + (positions || '<p>Tidak ada posisi.</p>') + '</div>' : '<p class="muted">Posisi tidak dibagikan.</p>') +
+    (currentAccount && currentAccount.username !== profile.username ? '<button id="followProfileBtn" type="button">' + (followed ? "Unfollow" : "Follow") + '</button>' : "");
+}
+async function renderSocialRoute() {
+  const path = location.pathname;
+  $("app").hidden = true;
+  $("authScreen").hidden = true;
+  $("socialScreen").hidden = false;
+  const content = $("socialContent");
+  content.innerHTML = '<p class="muted">Memuat…</p>';
+  if (path === "/leaderboard") {
+    const data = await api("/api/leaderboard");
+    const rows = (data.leaderboard || []).map((item, index) => '<article class="social-item"><h3>#' + (index + 1) + ' · <a href="/u/' + encodeURIComponent(item.username) + '">' + esc(item.displayName || item.username) + '</a></h3><p>@' + esc(item.username) + (item.netWorth != null ? ' · ' + fmtMoney(item.netWorth) + ' net worth simulasi' : "") + '</p><p class="muted small">Peringkat berdasarkan net worth simulasi, bukan hasil trading nyata.</p></article>').join("");
+    content.innerHTML = '<p class="eyebrow">KOMUNITAS</p><h1>Leaderboard simulasi</h1><p class="muted">Hanya akun yang memilih tampil. Net worth hanya ditampilkan jika dibagikan.</p><div class="social-grid">' + (rows || '<p>Belum ada akun yang memilih tampil.</p>') + '</div>';
+    return;
+  }
+  if (path === "/following") {
+    if (!currentAccount) return showAuth("Masuk untuk melihat akun yang kamu ikuti.");
+    const data = await api("/api/following");
+    const rows = (data.following || []).map((item) => '<article class="social-item"><h3><a href="/u/' + encodeURIComponent(item.username) + '">' + esc(item.displayName || item.username) + '</a></h3><p>@' + esc(item.username) + '</p>' + (item.netWorth != null ? '<p>Net worth simulasi: ' + fmtMoney(item.netWorth) + '</p>' : '<p class="muted">Net worth tidak dibagikan.</p>') + '</article>').join("");
+    content.innerHTML = '<p class="eyebrow">KOMUNITAS</p><h1>Following</h1><div class="social-grid">' + (rows || '<p>Kamu belum mengikuti akun. Kunjungi profil publik untuk follow.</p>') + '</div>';
+    return;
+  }
+  const match = path.match(/^\/u\/([^/]+)\/?$/);
+  if (match) {
+    const username = decodeURIComponent(match[1]);
+    const profile = await api("/api/profiles/" + encodeURIComponent(username));
+    let followed = false;
+    if (currentAccount) {
+      const followData = await api("/api/following");
+      followed = (followData.following || []).some((item) => item.username === profile.username);
+    }
+    content.innerHTML = publicProfileMarkup(profile, followed);
+    if (profile.bannerUrl) {
+      const banner = content.querySelector(".social-banner");
+      banner.style.backgroundImage = "url('" + encodeURI(new URL(profile.bannerUrl).href).replace(/'/g, "%27") + "')";
+    }
+    const followButton = $("followProfileBtn");
+    if (followButton) followButton.addEventListener("click", async () => {
+      followButton.disabled = true;
+      try {
+        await postJson("/api/following", { username: profile.username, action: followed ? "unfollow" : "follow" });
+        await renderSocialRoute();
+      } catch (error) { followButton.disabled = false; showToast(error.friendly || error.message, true); }
+    });
+  }
+}
+async function loadProfileEditor() {
+  const profile = await api("/api/profile");
+  $("profileDisplayName").value = profile.displayName || "";
+  $("profileDiscord").value = profile.discordName || "";
+  $("profileBio").value = profile.bio || "";
+  $("profileAvatar").value = profile.avatarUrl || "";
+  $("profileBanner").value = profile.bannerUrl || "";
+  $("sharePositions").checked = profile.sharePositions === true;
+  $("shareNetWorth").checked = profile.shareNetWorth === true;
+  $("showOnLeaderboard").checked = profile.showOnLeaderboard === true;
+  $("profileMessage").textContent = "";
+  $("profileEditor").hidden = false;
+}
+async function bootstrapAccount() {
+  const me = await api("/api/auth/me");
+  currentAccount = me.user;
+  const path = location.pathname;
+  const socialRoute = path === "/following" || path === "/leaderboard" || /^\/u\/[^/]+\/?$/.test(path);
+  if (socialRoute) {
+    $("accountBar").hidden = !currentAccount;
+    if (currentAccount) {
+      $("accountLabel").textContent = "@" + currentAccount.username;
+      $("myProfileLink").href = "/u/" + encodeURIComponent(currentAccount.username);
+    }
+    if (path === "/following" && !currentAccount) return showAuth("Masuk untuk melihat akun yang kamu ikuti.");
+    await renderSocialRoute();
+    return;
+  }
+  if (!currentAccount) return showAuth();
+  $("authScreen").hidden = true;
+  $("socialScreen").hidden = true;
+  $("app").hidden = false;
+  $("accountBar").hidden = false;
+  $("accountLabel").textContent = "@" + currentAccount.username;
+  $("myProfileLink").href = "/u/" + encodeURIComponent(currentAccount.username);
+  await loadState();
+  refreshRealtime();
+  startRealtime();
+  startNaraSchedule();
+}
+function bindAccountUi() {
+  $("authModeToggle").addEventListener("click", () => setAuthMode(!authRegisterMode));
+  $("authForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("authSubmit").disabled = true;
+    $("authError").textContent = "";
+    try {
+      const payload = { username: $("authUsername").value, password: $("authPassword").value };
+      if (authRegisterMode && $("authDisplayName").value.trim()) payload.displayName = $("authDisplayName").value.trim();
+      await postJson(authRegisterMode ? "/api/auth/register" : "/api/auth/login", payload);
+      location.href = "/";
+    } catch (error) { $("authError").textContent = error.friendly || error.message; }
+    finally { $("authSubmit").disabled = false; }
+  });
+  $("logoutBtn").addEventListener("click", async () => {
+    try { await postJson("/api/auth/logout", {}); } catch (_) {}
+    clearInterval(rtTimer);
+    clearInterval(rtCountdownTimer);
+    deskState = null;
+    currentAccount = null;
+    location.href = "/";
+  });
+  $("editProfileBtn").addEventListener("click", () => loadProfileEditor().catch((error) => showToast(error.message, true)));
+  $("closeProfileBtn").addEventListener("click", () => { $("profileEditor").hidden = true; });
+  $("profileEditor").addEventListener("click", (event) => { if (event.target === $("profileEditor")) $("profileEditor").hidden = true; });
+  $("profileForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = {
+      displayName: $("profileDisplayName").value, discordName: $("profileDiscord").value, bio: $("profileBio").value,
+      avatarUrl: $("profileAvatar").value, bannerUrl: $("profileBanner").value,
+      sharePositions: $("sharePositions").checked, shareNetWorth: $("shareNetWorth").checked,
+      showOnLeaderboard: $("showOnLeaderboard").checked,
+    };
+    try {
+      await postJson("/api/profile", payload);
+      $("profileMessage").textContent = "Profil tersimpan.";
+      currentAccount.displayName = payload.displayName;
+      $("accountLabel").textContent = "@" + currentAccount.username;
+    } catch (error) { $("profileMessage").textContent = error.friendly || error.message; }
+  });
+}
 function init() {
   if (location.protocol === "file:") $("fileWarning").hidden = false;
   initPwa();
@@ -3598,13 +3758,19 @@ function init() {
     }
   });
 
-  loadState()
-    .then(() => {
-      refreshRealtime();
-      startRealtime();
-      startNaraSchedule();
-    })
-    .catch((e) => showToast("Gagal memuat state: " + e.message, true));
+  bindAccountUi();
+  bootstrapAccount().catch((error) => {
+    if (error.status === 401 || error.message.includes("Authentication required")) return showAuth();
+    if (location.pathname === "/following" || location.pathname === "/leaderboard" || /^\/u\/[^/]+\/?$/.test(location.pathname)) {
+      $("app").hidden = true;
+      $("authScreen").hidden = true;
+      $("socialScreen").hidden = false;
+      $("socialContent").innerHTML = '<p class="form-error" role="alert">' + esc(error.message || "Profil gagal dimuat.") + '</p>';
+      return;
+    }
+    showAuth("Server tidak tersedia. Pastikan backend berjalan, lalu muat ulang halaman.");
+    console.error("Account bootstrap failed", error);
+  });
 }
 function clearBgMedia() {
   const v = $("bgVideoPreview");

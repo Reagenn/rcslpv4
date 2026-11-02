@@ -35,6 +35,57 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
+[hidden] { display: none !important; }
+.account-screen, .social-screen {
+  min-height: 100vh;
+  padding: 32px 16px;
+  display: grid;
+  place-items: center;
+}
+.account-card, .social-card {
+  width: min(100%, 620px);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 20px 80px #0008;
+}
+.account-card h1, .account-card h2, .social-card h1, .social-card h2 { margin: 4px 0 12px; }
+.account-card form { display: grid; gap: 8px; }
+.account-card form > button { justify-self: start; }
+.form-error { min-height: 1.4em; color: var(--danger); }
+.small { font-size: 12px; }
+.account-bar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 1400px;
+  margin: 12px auto 0;
+  padding: 0 20px;
+}
+.account-bar a, .social-card a { color: var(--teal); text-decoration: none; }
+.account-bar strong { margin-right: auto; }
+.account-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.check-row { display: flex; align-items: center; gap: 8px; }
+.check-row input { width: auto; }
+.social-screen { align-items: start; }
+.social-card { width: min(100%, 900px); }
+.social-banner { height: 170px; margin: 18px -28px 0; background: var(--panel2) center/cover no-repeat; border-block: 1px solid var(--line); }
+.social-user { display: flex; align-items: center; gap: 16px; margin: -34px 0 18px; position: relative; }
+.social-avatar { width: 76px; height: 76px; border: 4px solid var(--panel); border-radius: 50%; background: var(--panel2); object-fit: cover; }
+.social-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.social-item { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); }
+.social-item h3, .social-item p { margin: 4px 0; }
+@media (max-width: 600px) {
+  .account-bar { justify-content: flex-start; padding: 0 12px; }
+  .account-bar strong { width: 100%; }
+  .account-card, .social-card { padding: 20px; }
+  .social-banner { margin-inline: -20px; }
+}
 button {
   font-family: var(--font-stack);
   cursor: pointer;

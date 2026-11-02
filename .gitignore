@@ -11,3 +11,5 @@ Thumbs.db
 
 # Runtime state (positions, PnL, and local settings)
 backend/data/data.json
+backend/data/users.json
+backend/data/desks/

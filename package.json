@@ -1,1 +1,1 @@
-{"description":"LP Desk local v4 (simulation only) — frontend + backend","name":"lp-desk-local-v4","private":true,"scripts":{"start":"node backend/src/server.js"},"version":"4.0.0"}
+{"description":"LP Desk local v4 (simulation only) — frontend + backend","name":"lp-desk-local-v4","private":true,"scripts":{"start":"node backend/src/server.js","test:phase3":"node backend/phase3-smoke.js"},"version":"4.0.0"}

@@ -28,10 +28,15 @@ npm start
 - **Jangan** membuka `frontend/index.html` langsung (klik ganda / `file://`):
   semua panggilan API akan gagal. Halaman menampilkan banner peringatan
   merah bila terdeteksi dibuka via `file://`.
-- **Reset ke state default bersih:** tutup server lalu hapus
-  `backend/data/data.json` (file default dibuat lagi otomatis), atau klik
-  tautan “Reset demo ke keadaan default” di header aplikasi
-  (endpoint `POST /api/reset`). Modal dasar simulasi: **5.000 USDC**.
+- Server secara default hanya mendengarkan `127.0.0.1`. Untuk expose lewat
+  reverse proxy/container, set `HOST=0.0.0.0` dan `PORT` sesuai kebutuhan;
+  gunakan HTTPS di proxy.
+- Pendaftaran akun pertama mengklaim salinan `backend/data/data.json` sebagai
+  desk akun tersebut. Akun berikutnya mendapat desk simulasi baru. File lama
+  tidak dihapus. Data akun berada di `backend/data/users.json` dan
+  `backend/data/desks/`; semua file runtime ini privat dan tidak boleh di-commit.
+- **Reset desk akun saat ini:** klik “Reset demo ke keadaan default” di header
+  (`POST /api/reset`). Ini hanya mereset desk akun yang sedang login.
 
 ## 2. Struktur folder dan arsitektur
 
@@ -44,7 +49,9 @@ lp-desk-local-v4/
       js/app.js              -> seluruh logika frontend (fetch API, render, canvas, MediaRecorder)
   backend/
     src/server.js            -> server HTTP Node murni + semua endpoint API + semua logika simulasi
-    data/data.json           -> state persisten (JSON); default bersih bawaan ZIP
+    data/data.json           -> legacy state untuk migrasi akun pertama
+    data/users.json          -> akun, hash/session, profil (runtime privat)
+    data/desks/              -> state JSON privat per akun (runtime)
     package.json
   package.json               -> root; "npm start" = node backend/src/server.js
   README.md
@@ -63,10 +70,16 @@ lp-desk-local-v4/
   satu-satunya pemanggil API publik eksternal (DexScreener, Meteora DLMM
   Data API, GoPlus) sehingga frontend tidak terkena CORS dan logika
   penilaian (skor agent, range DLMM, Fee/TVL) konsisten di server.
-- **State** disimpan sebagai satu objek JSON di `backend/data/data.json`
-  (fungsi `loadState()`/`saveState()`/`defaultState()`). Setiap mutasi
-  (buka/tutup posisi, klaim, trade, DD, leader, settings, log) langsung
-  ditulis ke file itu.
+- **State akun** disimpan per akun di `backend/data/desks/<id>.json`;
+  `backend/data/data.json` hanya sumber migrasi satu kali untuk akun pertama.
+  `backend/data/users.json` menyimpan hash password scrypt, session token yang
+  di-hash, profil dan relasi follow. Cookie session HttpOnly, SameSite=Strict;
+  mutasi API memeriksa Origin. Server memakai antrean request karena engine
+  desk masih memakai state global dalam satu proses.
+- **Batas deployment:** penyimpanan JSON dan session store ini untuk penggunaan
+  lokal/satu proses, bukan backend multi-worker atau deployment publik yang
+  sudah hardened. Jangan expose langsung ke internet; gunakan HTTPS, backup
+  privat, dan reverse proxy yang dikonfigurasi dengan benar.
 - **Sumber data eksternal (read-only, tanpa API key):**
   - DexScreener `api.dexscreener.com` — pencarian token, pair, harga live,
     profil token terbaru.
@@ -80,6 +93,14 @@ lp-desk-local-v4/
 
 | Endpoint | Method | Fungsi |
 |---|---|---|
+| `/api/auth/register` | POST | Daftar akun dan membuat session |
+| `/api/auth/login` | POST | Masuk dengan cookie session |
+| `/api/auth/logout` | POST | Menghapus session |
+| `/api/auth/me` | GET | Memeriksa akun session saat ini |
+| `/api/profile` | GET/POST | Baca/simpan profil dan preferensi privacy |
+| `/api/profiles/:username` | GET | Profil publik; posisi/net worth hanya jika dipilih untuk dibagikan |
+| `/api/following` | GET/POST | Daftar follow; follow/unfollow akun |
+| `/api/leaderboard` | GET | Akun yang opt-in, dengan net worth hanya jika dibagikan |
 | `/api/state` | GET | Seluruh state UI: balances, positions (via `positionPublic`), transactions, pnlLedger, dueDiligence, leaders, settings, agentLogs |
 | `/api/reset` | POST | Kembali ke `defaultState()` bersih |
 | `/api/settings` | GET/POST | Baca/simpan settings 3 grup: `autoTrading`, `tpSl`, `copyTrading` (dengan validasi angka) |
@@ -446,6 +467,21 @@ UI saat offline; request `/api/*` tidak pernah di-cache, jadi posisi, harga, dan
 aksi tetap perlu server online. Tombol install muncul saat browser mengirim
 `beforeinstallprompt`; iOS menggunakan Share → Add to Home Screen. MIME
 `.webmanifest` disajikan oleh static server backend.
+
+### 21. Akun privat, profil, follow, leaderboard
+Login/registrasi memakai password hash scrypt dan session cookie HttpOnly;
+semua API desk memerlukan session. Desk dipisah per user. Akun pertama
+mengklaim salinan state legacy satu kali. Profil dasar dapat dilihat publik,
+tetapi posisi simulasi/net worth tersembunyi secara default; kontrol share dan
+opt-in leaderboard ada di **Edit profil & privasi**. Following hanya menerima
+kolom publik yang memang dibagikan. Leaderboard diberi label simulasi, bukan
+track record trading. Frontend: `bootstrapAccount()`, `renderSocialRoute()` dan
+panel `#profileEditor`. Backend: `/api/auth/*`, `/api/profile(s)/*`,
+`/api/following`, `/api/leaderboard`.
+
+Smoke test terisolasi (menyalin server ke direktori sementara):
+`npm run test:phase3`. Ini menguji autentikasi, privacy default, isolasi state,
+follow, leaderboard, CSRF dan logout.
 
 ---
 

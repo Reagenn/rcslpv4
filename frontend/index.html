@@ -14,7 +14,35 @@
       <strong>⚠ File ini dibuka langsung dari disk (file://) — aplikasi TIDAK akan bekerja.</strong>
       Jalankan lewat server lokal: buka terminal di folder proyek ini, jalankan <code>npm install</code> lalu <code>npm start</code>, kemudian buka <code>http://localhost:3000</code> di browser.
     </div>
-    <main class="app">
+    <section id="authScreen" class="account-screen" hidden>
+      <div class="account-card">
+        <p class="eyebrow">LP DESK ACCOUNT</p>
+        <h1 id="authTitle">Masuk ke desk</h1>
+        <p class="muted">Setiap akun memiliki desk simulasi privat. Buat akun untuk melanjutkan.</p>
+        <form id="authForm">
+          <label>Username <input id="authUsername" required minlength="3" maxlength="24" autocomplete="username" /></label>
+          <label id="displayNameField" hidden>Nama tampilan <input id="authDisplayName" maxlength="40" autocomplete="name" /></label>
+          <label>Password <input id="authPassword" type="password" required minlength="10" maxlength="128" autocomplete="current-password" /></label>
+          <button id="authSubmit" class="primary" type="submit">Masuk</button>
+        </form>
+        <p id="authError" class="form-error" role="status"></p>
+        <button id="authModeToggle" class="linkish" type="button">Belum punya akun? Daftar</button>
+        <p class="muted small">Gunakan password unik. Password disimpan sebagai hash di server lokal ini.</p>
+      </div>
+    </section>
+    <div id="accountBar" class="account-bar" hidden>
+      <strong id="accountLabel"></strong>
+      <a href="/">Desk</a><a id="myProfileLink" href="/">Profil publik</a><a href="/following">Following</a><a href="/leaderboard">Leaderboard simulasi</a>
+      <button id="editProfileBtn" type="button">Edit profil &amp; privasi</button>
+      <button id="logoutBtn" type="button">Keluar</button>
+    </div>
+    <section id="socialScreen" class="social-screen" hidden>
+      <div class="social-card">
+        <a href="/" class="muted">← Kembali ke desk</a>
+        <div id="socialContent"></div>
+      </div>
+    </section>
+    <main id="app" class="app" hidden>
       <!-- ============ HEADER + HERO ============ -->
       <header class="hero">
         <div class="hero-left">
@@ -1005,6 +1033,24 @@
       </div>
     </div>
 
+    <section id="profileEditor" class="account-screen" hidden>
+      <div class="account-card profile-editor-card">
+        <div class="account-heading"><div><p class="eyebrow">AKUN</p><h2>Edit profil dan privasi</h2></div><button id="closeProfileBtn" type="button">Tutup</button></div>
+        <form id="profileForm">
+          <label>Nama tampilan <input id="profileDisplayName" maxlength="40" required /></label>
+          <label>Discord <input id="profileDiscord" maxlength="64" placeholder="username Discord (opsional)" /></label>
+          <label>Bio <textarea id="profileBio" maxlength="280" rows="3"></textarea></label>
+          <label>Avatar URL (HTTPS) <input id="profileAvatar" type="url" maxlength="500" placeholder="https://…" /></label>
+          <label>Banner URL (HTTPS) <input id="profileBanner" type="url" maxlength="1000" placeholder="https://…" /></label>
+          <label class="check-row"><input id="sharePositions" type="checkbox" /> Bagikan posisi simulasi di profil publik</label>
+          <label class="check-row"><input id="shareNetWorth" type="checkbox" /> Bagikan net worth simulasi</label>
+          <label class="check-row"><input id="showOnLeaderboard" type="checkbox" /> Tampilkan profil di leaderboard simulasi</label>
+          <p class="muted small">Profil dasar (nama, Discord, bio, avatar, banner) bersifat publik. Posisi, net worth, dan leaderboard nonaktif secara default. Seluruh nilai adalah simulasi.</p>
+          <button class="primary" type="submit">Simpan profil</button>
+          <p id="profileMessage" role="status"></p>
+        </form>
+      </div>
+    </section>
     <script src="assets/js/app.js"></script>
   </body>
 </html>
