@@ -966,7 +966,7 @@ function readBody(req) {
     });
   });
 }
-const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
+const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 
 /* ---------------- Position helpers ---------------- */
 
@@ -1691,7 +1691,8 @@ const server = http.createServer(async (req, res) => {
         // entryPrice + pnlPct: untuk ticker gaya hosted ("SIMBOL / PAIR
         // $harga ±persen% vs entry"); pair dipakai sebagai label pair.
         const pnlPct = entry > 0 ? round2(((livePrice - entry) / entry) * 100) : 0;
-        return { id: p.id, symbol: p.symbol, chain: p.chain, pair: p.pair || "", entryPrice: roundPrice(entry), livePrice, value, pnl: round2(value - Number(p.amount)), pnlPct };
+        const inRange = livePrice >= Number(p.minPrice) && livePrice <= Number(p.maxPrice);
+        return { id: p.id, symbol: p.symbol, chain: p.chain, pair: p.pair || "", entryPrice: roundPrice(entry), livePrice, value, pnl: round2(value - Number(p.amount)), pnlPct, inRange };
       });
       return sendJson(res, 200, {
         isLive: true,

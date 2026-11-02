@@ -48,6 +48,12 @@ let walletAddress = "";
 let walletChainId = "";
 let walletNativeBalance = null;
 let walletBoundProvider = null;
+const NOTIFICATION_PREFS_KEY = "rcslpv4-browser-notifications";
+let notificationPreferences = loadNotificationPreferences();
+let rangeNotificationBaselineReady = false;
+let previousRealtimeRange = new Map();
+let rangeAlertsSent = new Set();
+let deferredPwaInstallPrompt = null;
 const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
 const BASE_SEPOLIA_UNISWAP_V3_FACTORY = "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24";
 const BASE_SEPOLIA_UNISWAP_V3_QUOTER = "0xC5290058841028F1614F3A6F0F5816cAd0df5E27";
@@ -71,6 +77,140 @@ function defaultSettings() {
     tpSl: { armed: false, defaultTpPct: 22, defaultSlPct: 28 },
     copyTrading: { enabled: false, leaderId: null, amountPerCopy: 250, maxPositions: 3, rangePreset: "wide", dailyLossLimit: 150 },
   };
+}
+function loadNotificationPreferences() {
+  const defaults = { enabled: false, takeProfit: true, stopLoss: true, outOfRange: true };
+  try {
+    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_PREFS_KEY) || "null");
+    if (!stored || typeof stored !== "object") return defaults;
+    return {
+      enabled: stored.enabled === true,
+      takeProfit: stored.takeProfit !== false,
+      stopLoss: stored.stopLoss !== false,
+      outOfRange: stored.outOfRange !== false,
+    };
+  } catch (_) {
+    return defaults;
+  }
+}
+function saveNotificationPreferences() {
+  localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences));
+  renderNotificationSettings();
+}
+function renderNotificationSettings() {
+  const supported = window.isSecureContext && "Notification" in window;
+  const permission = supported ? Notification.permission : "unsupported";
+  $("notifyTp").checked = notificationPreferences.takeProfit;
+  $("notifySl").checked = notificationPreferences.stopLoss;
+  $("notifyOutOfRange").checked = notificationPreferences.outOfRange;
+  const button = $("enableNotificationsBtn");
+  button.disabled = !supported || permission === "denied";
+  if (!supported) {
+    button.textContent = "Notifikasi tidak tersedia";
+    $("notificationStatus").textContent = "Perlu browser yang mendukung Notification API dan secure context (localhost/HTTPS).";
+  } else if (permission === "denied") {
+    button.textContent = "Izin diblokir di browser";
+    $("notificationStatus").textContent = "Ubah izin notifikasi situs dari pengaturan browser untuk mengaktifkannya.";
+  } else if (notificationPreferences.enabled && permission === "granted") {
+    button.textContent = "Matikan notifikasi";
+    $("notificationStatus").textContent = "Notifikasi aktif saat desk dan polling realtime berjalan.";
+  } else if (permission === "granted") {
+    button.textContent = "Aktifkan notifikasi browser";
+    $("notificationStatus").textContent = "Izin sudah ada; tekan tombol untuk mulai menerima alert lokal.";
+  } else {
+    button.textContent = "Minta izin notifikasi";
+    $("notificationStatus").textContent = "Notifikasi nonaktif sampai kamu memberi izin lewat tombol ini.";
+  }
+}
+async function enableBrowserNotifications() {
+  if (!window.isSecureContext || !("Notification" in window)) return renderNotificationSettings();
+  if (Notification.permission === "granted") {
+    notificationPreferences.enabled = !notificationPreferences.enabled;
+    saveNotificationPreferences();
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    notificationPreferences.enabled = permission === "granted";
+    saveNotificationPreferences();
+  } catch (_) {
+    $("notificationStatus").textContent = "Browser tidak memberikan izin notifikasi.";
+  }
+}
+function sendBrowserNotification(title, body, tag) {
+  if (!notificationPreferences.enabled || !window.isSecureContext || !("Notification" in window) || Notification.permission !== "granted") return;
+  const options = { body, icon: "/icon.svg", badge: "/icon.svg", tag, renotify: false };
+  const fallback = () => { try { new Notification(title, options); } catch (_) { /* Browser tidak mendukung jalur notifikasi ini. */ } };
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration("/")
+      .then((registration) => registration ? registration.showNotification(title, options) : fallback())
+      .catch(fallback);
+    return;
+  }
+  fallback();
+}
+function processRealtimeNotifications(data) {
+  for (const item of data.closedByTpSl || []) {
+    if (item.reason === "TP" && notificationPreferences.takeProfit) {
+      sendBrowserNotification("Take profit simulasi", item.symbol + " ditutup otomatis pada harga " + fmtPrice(item.price) + ".", "rcs-tp-" + item.id);
+    } else if (item.reason === "SL" && notificationPreferences.stopLoss) {
+      sendBrowserNotification("Stop loss simulasi", item.symbol + " ditutup otomatis pada harga " + fmtPrice(item.price) + ".", "rcs-sl-" + item.id);
+    }
+  }
+  const nextRange = new Map();
+  for (const position of data.positions || []) {
+    if (typeof position.inRange !== "boolean") continue;
+    const previous = previousRealtimeRange.get(position.id);
+    if (rangeNotificationBaselineReady && previous === true && position.inRange === false &&
+        notificationPreferences.outOfRange && !rangeAlertsSent.has(position.id)) {
+      rangeAlertsSent.add(position.id);
+      sendBrowserNotification("LP keluar range", (position.pair || position.symbol) + " berada di luar range. Tidak ada posisi yang ditutup.", "rcs-range-" + position.id);
+    }
+    nextRange.set(position.id, position.inRange);
+  }
+  previousRealtimeRange = nextRange;
+  rangeNotificationBaselineReady = true;
+}
+function updatePwaStatus(message) {
+  $("pwaStatus").textContent = message;
+}
+async function initPwa() {
+  const installed = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+  if (installed) updatePwaStatus("RCS LP Desk sudah berjalan sebagai aplikasi.");
+  else updatePwaStatus("Bisa dipasang dari browser jika browser mendukung PWA.");
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) {
+    updatePwaStatus("PWA perlu browser yang mendukung Service Worker dan localhost/HTTPS.");
+  } else {
+    navigator.serviceWorker.register("/service-worker.js", { scope: "/" })
+      .then(() => updatePwaStatus(installed ? "Aplikasi terpasang; shell offline tersedia." : "PWA siap. Data API tetap perlu server online."))
+      .catch(() => updatePwaStatus("Service Worker gagal didaftarkan; buka dari localhost atau HTTPS."));
+  }
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredPwaInstallPrompt = event;
+    $("pwaInstallBtn").hidden = false;
+    updatePwaStatus("Siap di-install ke perangkat.");
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredPwaInstallPrompt = null;
+    $("pwaInstallBtn").hidden = true;
+    updatePwaStatus("RCS LP Desk berhasil di-install.");
+  });
+  $("pwaInstallBtn").addEventListener("click", async () => {
+    if (!deferredPwaInstallPrompt) return;
+    deferredPwaInstallPrompt.prompt();
+    const choice = await deferredPwaInstallPrompt.userChoice;
+    deferredPwaInstallPrompt = null;
+    $("pwaInstallBtn").hidden = true;
+    updatePwaStatus(choice.outcome === "accepted" ? "Install diterima." : "Install dibatalkan; kamu bisa install dari menu browser.");
+  });
+}
+function initNotificationSettings() {
+  renderNotificationSettings();
+  $("enableNotificationsBtn").addEventListener("click", enableBrowserNotifications);
+  $("notifyTp").addEventListener("change", () => { notificationPreferences.takeProfit = $("notifyTp").checked; saveNotificationPreferences(); });
+  $("notifySl").addEventListener("change", () => { notificationPreferences.stopLoss = $("notifySl").checked; saveNotificationPreferences(); });
+  $("notifyOutOfRange").addEventListener("change", () => { notificationPreferences.outOfRange = $("notifyOutOfRange").checked; saveNotificationPreferences(); });
 }
 function fmtCount(n) {
   if (n == null || !isFinite(Number(n))) return "—";
@@ -1399,6 +1539,7 @@ async function refreshRealtime() {
   try {
     const data = await api("/api/realtime");
     rtData = data;
+    processRealtimeNotifications(data);
     const timeStr = new Date(data.lastUpdated).toLocaleTimeString("id-ID");
     $("rtValue").textContent = fmtMoney(data.portfolioValue);
     const pnlPctTotal = round2Client((data.totalPnl / 5000) * 100);
@@ -3145,6 +3286,8 @@ function fillChainSelects() {
 }
 function init() {
   if (location.protocol === "file:") $("fileWarning").hidden = false;
+  initPwa();
+  initNotificationSettings();
   initBrowserWallet();
   fillChainSelects();
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));

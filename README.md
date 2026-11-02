@@ -12,6 +12,10 @@ dibuat semirip mungkin.
 > Aplikasi menolak jaringan selain Base Sepolia, tidak membaca/menyimpan private
 > key, dan tidak mengirimkannya ke server. Data pasar berasal dari API publik
 > read-only: DexScreener, Meteora DLMM Data API, dan GoPlus.
+>
+> **Phase 3 (browser):** notifikasi TP/SL dan keluar-range bersifat lokal saat
+> tab realtime terbuka; PWA dapat di-install dan shell UI di-cache untuk offline.
+> Tidak ada Web Push server atau pemantauan/auto-close 24/7.
 
 ## Cara menjalankan
 

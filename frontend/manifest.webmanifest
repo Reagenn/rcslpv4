@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "RCS LP Desk",
+  "short_name": "RCS LP",
+  "description": "Liquidity operations desk simulation",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#09090c",
+  "theme_color": "#09090c",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

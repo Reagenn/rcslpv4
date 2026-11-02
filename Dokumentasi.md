@@ -431,6 +431,22 @@ state ke default bersih (saldo awal, tanpa posisi/leader/log, watchlist
 Kopi kosong). Frontend: handler `#resetDemoBtn` di `init()`. Backend:
 `POST /api/reset` → `defaultState()` + `saveState()`.
 
+### 20. Notifikasi browser dan PWA
+Notifikasi opsional disimpan per-browser di localStorage. Izin diminta hanya
+setelah tombol diklik pengguna. Alert lokal untuk posisi simulasi: TP/SL yang
+ditutup oleh Byte dan transisi pertama posisi dari in-range ke out-of-range;
+alert range tidak menutup posisi. Perlu tab terbuka, polling realtime aktif,
+dan izin notifikasi browser. Ini **bukan Web Push server**, bukan bot 24/7,
+dan tidak mengirim transaksi. Frontend: `initNotificationSettings()`,
+`processRealtimeNotifications()`, `sendBrowserNotification()`.
+
+PWA menggunakan `frontend/manifest.webmanifest`, `frontend/service-worker.js`,
+dan `frontend/icon.svg`. Service Worker meng-cache shell statis untuk membuka
+UI saat offline; request `/api/*` tidak pernah di-cache, jadi posisi, harga, dan
+aksi tetap perlu server online. Tombol install muncul saat browser mengirim
+`beforeinstallprompt`; iOS menggunakan Share → Add to Home Screen. MIME
+`.webmanifest` disajikan oleh static server backend.
+
 ---
 
 ## Catatan kejujuran data

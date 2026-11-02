@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#09090c" />
     <title>LP Desk — Demo Simulasi Multi-Chain (Lokal v4)</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="assets/css/styles.css" />
   </head>
   <body>
@@ -18,7 +21,7 @@
           <p class="eyebrow">MULTI-CHAIN · DEX SCREENER DATA</p>
           <h1>Liquidity operations,<br /><span class="accent-text">one desk.</span></h1>
           <p class="muted hero-sub">
-            Satu desk simulasi untuk operasi LP multi-chain — pantau fee &amp; PnL, cari token, dan jalankan Agent Crew. Koneksi wallet browser saat ini hanya membaca saldo Base Sepolia testnet; tidak membaca private key atau mengirim transaksi.
+            Satu desk simulasi operasi LP multi-chain — pantau fee &amp; PnL, cari token, dan jalankan Agent Crew. Swap token ERC-20 tersedia di Base Sepolia setelah konfirmasi wallet; posisi LP desk tetap simulasi.
           </p>
           <p class="muted"><button id="resetDemoBtn" class="linkish" type="button">Reset demo ke keadaan default</button></p>
         </div>
@@ -52,7 +55,7 @@
             <span class="rt-title">LIVE · PORTFOLIO REALTIME</span>
           </div>
           <p class="muted">
-            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Posisi dan dana desk tetap simulasi; koneksi wallet hanya baca saldo Base Sepolia testnet. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
+            Harga posisi ditarik otomatis dari DEX Screener tiap 5 detik, nilai portofolio, PnL &amp; fee dihitung ulang tiap siklus. Posisi dan dana desk tetap simulasi; swap wallet hanya di Base Sepolia testnet setelah konfirmasi. Semua tab ikut diperbarui pada siklus yang sama (Desk, Monthly
             Profit + Card Studio, Copy LP, Top LP dari cache server — scan sumber maks. tiap 5 menit agar tidak kena batas API publik). Refresh dilewati sesaat bila ada modal terbuka, kamu sedang mengetik, konfirmasi hapus tampil, atau
             detail Discover terbuka.
           </p>
@@ -172,6 +175,27 @@
               <p id="swapApprovalStatus" class="muted" role="status" aria-live="polite">Buat quote terlebih dahulu.</p>
               <p id="swapTxResult" class="muted" role="status" aria-live="polite">Belum ada transaksi testnet.</p>
               <a id="swapTxLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Lihat transaksi di BaseScan Sepolia</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel pwa-notifications-panel" id="pwaNotificationsPanel">
+          <p class="eyebrow">PHASE 3 · BROWSER</p>
+          <h2>Notifications &amp; Install App</h2>
+          <div class="two">
+            <div class="notification-settings">
+              <p class="muted">Pemberitahuan lokal hanya aktif saat desk dan tab realtime berjalan. Bukan Web Push server, bukan pemantauan 24/7, dan tidak menutup posisi.</p>
+              <label class="check"><input id="notifyTp" type="checkbox" /> Take profit (posisi simulasi ditutup)</label>
+              <label class="check"><input id="notifySl" type="checkbox" /> Stop loss (posisi simulasi ditutup)</label>
+              <label class="check"><input id="notifyOutOfRange" type="checkbox" /> Posisi pertama kali keluar range</label>
+              <button id="enableNotificationsBtn" class="secondary" type="button">Aktifkan notifikasi browser</button>
+              <p id="notificationStatus" class="muted" role="status" aria-live="polite">Notifikasi belum aktif.</p>
+            </div>
+            <div class="pwa-install-box">
+              <p class="muted">Install RCS LP Desk sebagai aplikasi web untuk akses dari home screen. Data API memerlukan server online; shell UI dapat dibuka saat offline, tetapi harga/posisi live tidak diperbarui.</p>
+              <button id="pwaInstallBtn" class="primary" type="button" hidden>Install aplikasi</button>
+              <p id="pwaStatus" class="muted" role="status" aria-live="polite">Memeriksa dukungan install…</p>
+              <p class="muted">iPhone/iPad: gunakan Share → Add to Home Screen. Agar notifikasi tersedia di iOS, buka aplikasi dari ikon Home Screen.</p>
             </div>
           </div>
         </section>
