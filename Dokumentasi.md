@@ -4,12 +4,12 @@ Dokumen ini menjelaskan cara menjalankan proyek, arsitekturnya, dan **peta
 fitur**: setiap fitur beserta file frontend, file/endpoint/fungsi backend,
 dan sumber datanya.
 
-> **Batasan:** posisi, trade, saldo desk, fee, dan PnL tetap simulasi. Wallet
-> browser opsional hanya dipakai read-only pada Base Sepolia testnet untuk
-> menampilkan alamat dan saldo ETH testnet. Aplikasi tidak membaca/menyimpan
-> private key, tidak mengirimnya ke server, dan belum menandatangani atau
-> mengirim transaksi. Data yang tidak tersedia dari sumber publik ditampilkan
-> kosong atau dilabeli jujur, tidak pernah dikarang.
+> **Batasan:** posisi LP, trade desk, saldo desk, fee, dan PnL tetap simulasi.
+> Modul swap browser dapat mengirim transaksi ERC-20 sungguhan **hanya di Base
+> Sepolia testnet**, setelah konfirmasi terpisah di wallet untuk approval dan
+> swap. Jangan gunakan aset bernilai nyata; aplikasi tidak membaca/menyimpan
+> private key dan tidak mengirimkannya ke server. Data yang tidak tersedia dari
+> sumber publik ditampilkan kosong atau dilabeli jujur, tidak dikarang.
 
 ---
 
@@ -201,22 +201,28 @@ persisten di `data.json`. Frontend: `renderBalances()`,
 `renderTransactions()`, `doTrade()`, panel `#balancesPanel`. Backend:
 `POST /api/trade`, `defaultState()`, `saveState()`.
 
-Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi: pengguna harus
-menyetujui `eth_requestAccounts`; UI membaca `eth_chainId` dan `eth_getBalance`
-saat Base Sepolia (84532) aktif. Tombol pindah jaringan memakai
-`wallet_switchEthereumChain` / `wallet_addEthereumChain`. Pemeriksa pool
-Uniswap V3 melakukan `eth_call` read-only ke factory Base Sepolia
-`0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24` (alamat dari
-[deployment docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments))
-untuk melihat pool, tick, liquidity raw, dan harga spot indikatif. Quote swap
-exact-input memakai QuoterV2 Base Sepolia
-`0xC5290058841028F1614F3A6F0F5816cAd0df5E27` melalui `eth_call`; hasilnya
-amount out, selisih output terhadap spot (termasuk fee), dan estimasi gas
-Quoter. Ini bukan quote mint LP atau biaya gas final. Alamat wallet hanya
-berada di memori frontend. Tidak ada private key, transaksi signing, atau
-endpoint backend wallet pada tahap ini. Frontend: `initBrowserWallet()`,
-`connectBrowserWallet()`, `refreshBrowserWallet()`, `checkBaseSepoliaPool()`,
-`quoteBaseSepoliaSwap()`, panel `#walletPanel`.
+Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Saat Base
+Sepolia (84532) aktif, UI membaca alamat/saldo native, pool, saldo token,
+allowance, dan quote melalui RPC wallet. Pemeriksa pool Uniswap V3 memakai
+factory `0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24`; quote exact-input memakai
+QuoterV2 `0xC5290058841028F1614F3A6F0F5816cAd0df5E27`. Router eksekusi tetap
+SwapRouter02 `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` (alamat Base Sepolia
+dari [deployment docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments)).
+
+Untuk token ERC-20 testnet yang dipilih pengguna, tombol **Approve jumlah
+yang tepat** meminta transaksi approval ke router tersebut; allowance nonzero
+yang kurang dapat memerlukan transaksi reset ke nol dahulu. Tombol **Swap**
+menyusun exact-input dengan minimum output sesuai slippage 0,5/1/2/5%.
+Sebelum setiap transaksi, UI memeriksa chain, akun, saldo ETH untuk gas,
+estimasi gas, dan meminta konfirmasi aplikasi; wallet kemudian meminta
+konfirmasi signing sendiri. Quote kedaluwarsa setelah 2 menit dan input,
+akun, chain, atau slippage yang berubah membatalkannya. Hash dan status receipt
+ditampilkan dengan tautan BaseScan Sepolia. Tidak ada dukungan mainnet atau
+transaksi LP (mint/close/claim); saldo, posisi, dan trade di desk tetap
+simulasi. Alamat wallet hanya di memori frontend; tidak ada backend wallet.
+Frontend: `initBrowserWallet()`, `checkBaseSepoliaPool()`,
+`quoteBaseSepoliaSwap()`, `approveBaseSepoliaSwap()`,
+`executeBaseSepoliaSwap()`, panel `#walletPanel`.
 
 ### 5. Simulasi Meteora DLMM (Solana)
 Price bins + active bin, bin step, strategi Spot/Curve/Bid-Ask,

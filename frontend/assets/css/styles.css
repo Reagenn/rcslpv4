@@ -1923,8 +1923,27 @@ input[type="range"] {
   padding: 9px 10px;
   color: var(--text);
 }
+.swap-execution-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.swap-execution-panel .pool-preflight-actions {
+  align-items: end;
+}
+#swapTxLink {
+  display: inline-block;
+  margin: 4px 0 0;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+#swapTxLink[hidden] {
+  display: none;
+}
 #poolCheckResult,
-#poolQuoteResult {
+#poolQuoteResult,
+#swapTxResult,
+#swapApprovalStatus {
   overflow-wrap: anywhere;
   white-space: pre-line;
 }

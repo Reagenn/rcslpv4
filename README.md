@@ -5,11 +5,12 @@ ulang sebagai proyek lokal Node.js dengan frontend dan backend terpisah.
 **Ini bukan salinan byte-per-byte dari file hosted** — fitur dan alurnya
 dibuat semirip mungkin.
 
-> ⚠️ **POSISI LP TETAP SIMULASI.** Saldo desk, trade, posisi LP, fee, dan PnL
-> bukan dana nyata. Wallet browser opsional hanya terhubung read-only ke Base
-> Sepolia testnet untuk menampilkan alamat dan saldo ETH testnet. Aplikasi tidak
-> membaca/menyimpan private key, tidak mengirimnya ke server, dan belum
-> menandatangani atau mengirim transaksi. Data pasar berasal dari API publik
+> ⚠️ **POSISI LP TETAP SIMULASI.** Saldo desk, trade desk, posisi LP, fee,
+> dan PnL bukan dana nyata. Modul swap browser mengirim transaksi ERC-20
+> sungguhan hanya di **Base Sepolia testnet**; approval dan swap dikonfirmasi
+> terpisah melalui wallet. Gunakan token testnet, jangan aset bernilai nyata.
+> Aplikasi menolak jaringan selain Base Sepolia, tidak membaca/menyimpan private
+> key, dan tidak mengirimkannya ke server. Data pasar berasal dari API publik
 > read-only: DexScreener, Meteora DLMM Data API, dan GoPlus.
 
 ## Cara menjalankan

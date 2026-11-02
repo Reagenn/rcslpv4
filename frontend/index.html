@@ -103,7 +103,7 @@
             <div>
               <p class="eyebrow">WALLET BROWSER · BASE SEPOLIA TESTNET</p>
               <h2>Hubungkan wallet testnet</h2>
-              <p class="muted">Koneksi EIP-1193 untuk membaca alamat dan saldo ETH testnet. Tidak ada private key yang dibaca/disimpan, dan belum ada transaksi yang ditandatangani.</p>
+              <p class="muted">Koneksi wallet EIP-1193 untuk alamat, saldo testnet, dan transaksi Base Sepolia yang kamu konfirmasi. Aplikasi tidak membaca atau menyimpan private key.</p>
             </div>
             <div class="wallet-actions">
               <button id="walletConnectBtn" class="primary" type="button">Hubungkan wallet</button>
@@ -117,9 +117,9 @@
             <div><span>Saldo native</span><strong id="walletNativeBalance">—</strong></div>
           </div>
           <div class="pool-preflight">
-            <p class="eyebrow">BASE SEPOLIA · UNISWAP V3 · READ ONLY</p>
+            <p class="eyebrow">POOL CHECK · BASE SEPOLIA · UNISWAP V3</p>
             <h3>Cek pool dan quote swap indikatif</h3>
-            <p class="muted">Lookup pool memakai factory resmi dan quote swap exact-input memakai QuoterV2 Base Sepolia. Quote swap bukan quote mint LP; tidak ada transaksi yang dikirim.</p>
+            <p class="muted">Lookup pool memakai factory Uniswap V3 dan quote exact-input dari QuoterV2 Base Sepolia. Swap memakai router tetap Uniswap SwapRouter02. Hanya Base Sepolia; tidak ada mainnet.</p>
             <div class="two">
               <label>Token A (alamat kontrak ERC-20)
                 <input id="poolTokenA" spellcheck="false" placeholder="0x…" autocomplete="off" />
@@ -143,6 +143,20 @@
               <button id="poolQuoteBtn" class="secondary" type="button" disabled>Quote swap testnet</button>
             </div>
             <p id="poolQuoteResult" class="muted" role="status" aria-live="polite">Periksa pool terlebih dahulu untuk mengaktifkan quote.</p>
+            <div class="swap-execution-panel">
+              <p class="eyebrow">SWAP SUNGGUHAN · BASE SEPOLIA TESTNET</p>
+              <p class="muted">Gunakan token testnet saja. Approval hanya sebesar input ke router SwapRouter02 yang ditetapkan. Approval dan swap adalah transaksi terpisah, masing-masing perlu konfirmasi wallet. Pastikan detail di wallet benar; aplikasi menolak jaringan selain Base Sepolia.</p>
+              <div class="pool-preflight-actions">
+                <label>Slippage batas
+                                  <select id="swapSlippage"><option value="50">0.50%</option><option value="100" selected>1.00%</option><option value="200">2.00%</option><option value="500">5.00%</option></select>
+                </label>
+                <button id="swapApproveBtn" class="secondary" type="button" disabled>Approve jumlah tepat</button>
+                <button id="swapExecuteBtn" class="primary" type="button" disabled>Swap lewat wallet</button>
+              </div>
+              <p id="swapApprovalStatus" class="muted" role="status" aria-live="polite">Buat quote terlebih dahulu.</p>
+              <p id="swapTxResult" class="muted" role="status" aria-live="polite">Belum ada transaksi testnet.</p>
+              <a id="swapTxLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Lihat transaksi di BaseScan Sepolia</a>
+            </div>
           </div>
         </section>
 
