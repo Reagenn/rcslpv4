@@ -1230,6 +1230,7 @@ function renderPositions() {
         live ? round2Client(p.value + fees - p.amount)
         : p.closePnl != null ? p.closePnl
         : 0;
+      const pnlPct = Number(p.amount) > 0 ? round2Client((upnl / Number(p.amount)) * 100) : 0;
       const movePct = p.entryPrice > 0 ? round2Client((p.currentPrice / p.entryPrice - 1) * 100) : 0;
       const isDlmm = p.product === "DLMM" && p.lowerBin != null && p.upperBin != null;
       const productLabel = p.product === "DLMM" ? "METEORA DLMM" : "SIM RANGE";
@@ -1322,6 +1323,17 @@ function renderPositions() {
         "<div><span>LP POSITION VALUE</span><strong>" +
         fmtMoney(p.value) +
         "</strong></div>" +
+        '<div><span>PNL POSISI</span><strong class="' +
+        (upnl >= 0 ? "pos" : "neg") +
+        '">' +
+        (upnl >= 0 ? "+" : "−") +
+        fmtMoney(Math.abs(upnl)) +
+        '</strong><small class="pnl-percent ' +
+        (pnlPct >= 0 ? "pos" : "neg") +
+        '">' +
+        (pnlPct >= 0 ? "+" : "") +
+        pnlPct.toFixed(2) +
+        "% dari deposit</small></div>" +
         "<div><span>HOLD BENCHMARK</span><strong>" +
         fmtMoney(p.holdValue) +
         "</strong></div>" +

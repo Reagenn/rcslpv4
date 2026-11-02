@@ -1436,7 +1436,7 @@ h4 {
 }
 .pos-stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin: 10px 0;
 }
@@ -1451,6 +1451,13 @@ h4 {
   font-size: 16px;
   font-family: var(--font-num);
   font-weight: 600;
+}
+.pos-stats .pnl-percent {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: 0;
+  font-weight: 500;
 }
 .range-block {
   margin: 12px 0 4px;
