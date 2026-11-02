@@ -57,6 +57,7 @@ const BASE_SEPOLIA_TOKENS = [
   { symbol: "USDC", name: "USD Coin (testnet)", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6 },
 ];
 let importedBaseSepoliaTokens = [];
+let tokenPickerTarget = "A";
 let baseSepoliaPoolContext = null;
 let baseSepoliaSwapQuote = null;
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
@@ -365,6 +366,64 @@ function renderPoolTokenDetails() {
     direction.options[0].textContent = tokenA.symbol + " → " + tokenB.symbol;
     direction.options[1].textContent = tokenB.symbol + " → " + tokenA.symbol;
   }
+  [["chooseTokenABtn", tokenA, "A"], ["chooseTokenBBtn", tokenB, "B"]].forEach(([id, token, side]) => {
+    const button = $(id);
+    if (!button) return;
+    button.textContent = token ? token.symbol + " · " + token.name : "Pilih token";
+    button.title = token ? token.address : "Pilih token " + side;
+    button.setAttribute("aria-label", token ? "Pilih token " + side + ": " + token.symbol + ", " + token.address : "Pilih token " + side);
+  });
+}
+function renderTokenPicker() {
+  const search = $("tokenPickerSearch").value.trim().toLowerCase();
+  const matches = allBaseSepoliaTokens().filter((token) =>
+    [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search)));
+  const quick = $("tokenPickerQuick");
+  quick.replaceChildren();
+  BASE_SEPOLIA_TOKENS.filter((token) => !search || [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search))).forEach((token) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = token.symbol;
+    button.title = token.name + " · " + token.address;
+    button.addEventListener("click", () => chooseTokenFromPicker(token.address));
+    quick.appendChild(button);
+  });
+  const list = $("tokenPickerList");
+  list.replaceChildren();
+  matches.forEach((token) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "token-picker-row";
+    row.addEventListener("click", () => chooseTokenFromPicker(token.address));
+    const badge = document.createElement("span");
+    badge.className = "token-picker-badge";
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = token.symbol.slice(0, 1).toUpperCase();
+    const copy = document.createElement("span");
+    copy.className = "token-picker-copy";
+    const title = document.createElement("strong");
+    title.textContent = token.name + " · " + token.symbol;
+    const detail = document.createElement("small");
+    detail.textContent = token.address.slice(0, 8) + "…" + token.address.slice(-6) + " · " + token.decimals + " decimals";
+    copy.append(title, detail);
+    row.append(badge, copy);
+    list.appendChild(row);
+  });
+  $("tokenPickerEmpty").hidden = matches.length > 0;
+}
+function openTokenPicker(target) {
+  tokenPickerTarget = target === "B" ? "B" : "A";
+  $("tokenPickerTitle").textContent = "Pilih Token " + tokenPickerTarget;
+  $("tokenPickerSearch").value = "";
+  renderTokenPicker();
+  $("tokenPickerModal").hidden = false;
+  window.requestAnimationFrame(() => $("tokenPickerSearch").focus());
+}
+function chooseTokenFromPicker(address) {
+  const select = $(tokenPickerTarget === "A" ? "poolTokenA" : "poolTokenB");
+  select.value = address;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  $("tokenPickerModal").hidden = true;
 }
 function decodeAbiText(result) {
   const body = String(result || "").replace(/^0x/, "");
@@ -817,6 +876,15 @@ function initBrowserWallet() {
   $("walletConnectBtn").addEventListener("click", connectBrowserWallet);
   $("walletSwitchBtn").addEventListener("click", switchToBaseSepolia);
   populateBaseSepoliaTokenSelectors();
+  $("chooseTokenABtn").addEventListener("click", () => openTokenPicker("A"));
+  $("chooseTokenBBtn").addEventListener("click", () => openTokenPicker("B"));
+  $("tokenPickerSearch").addEventListener("input", renderTokenPicker);
+  $("tokenPickerModal").addEventListener("click", (event) => {
+    if (event.target === $("tokenPickerModal")) $("tokenPickerModal").hidden = true;
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("tokenPickerModal").hidden) $("tokenPickerModal").hidden = true;
+  });
   $("poolCheckBtn").addEventListener("click", checkBaseSepoliaPool);
   $("poolQuoteBtn").addEventListener("click", quoteBaseSepoliaSwap);
   $("addCustomTokenBtn").addEventListener("click", importBaseSepoliaToken);

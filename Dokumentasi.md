@@ -203,11 +203,12 @@ persisten di `data.json`. Frontend: `renderBalances()`,
 
 Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Saat Base
 Sepolia (84532) aktif, UI membaca alamat/saldo native, pool, saldo token,
-allowance, dan quote melalui RPC wallet. Token A/B dipilih dari menu WETH dan
-USDC testnet; daftar bisa ditambah dengan import alamat kontrak. Kode
-kontrak, decimals, balanceOf, dan allowance diperiksa lewat RPC Base Sepolia;
-label token tidak memverifikasi keaslian. Token import hanya disimpan selama
-tab terbuka. Alamat bawaan: WETH
+allowance, dan quote melalui RPC wallet. Tombol pilih token membuka dialog
+pencarian nama/simbol/alamat dengan pilihan cepat WETH/USDC; token A/B dipilih
+tanpa mengetik alamat untuk aset bawaan. Daftar bisa ditambah dengan import
+alamat kontrak. Kode kontrak, decimals, balanceOf, dan allowance diperiksa
+lewat RPC Base Sepolia; label token tidak memverifikasi keaslian. Token import
+hanya disimpan selama tab terbuka. Alamat bawaan: WETH
 `0x4200000000000000000000000000000000000006` (lihat [Base contract
 docs](https://docs.base.org/specifications/reference/base-contracts)) dan USDC
 `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (lihat [Circle USDC

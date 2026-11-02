@@ -1921,6 +1921,139 @@ input[type="range"] {
   overflow-wrap: anywhere;
   white-space: pre-line;
 }
+.token-select-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.token-select-field > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.token-select-trigger {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--text);
+  text-align: left;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.token-select-trigger:hover,
+.token-picker-row:hover,
+.token-picker-quick button:hover {
+  border-color: var(--accent);
+}
+.modal.token-picker-modal {
+  align-items: center;
+  padding: 12px;
+}
+.token-picker-modal .token-picker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(100%, 460px);
+  max-height: min(84vh, 760px);
+  overflow: hidden;
+  padding: 18px;
+}
+.token-picker-card h3,
+.token-picker-card .eyebrow,
+.token-picker-card .muted {
+  margin: 0;
+}
+.token-picker-search {
+  display: block;
+}
+.token-picker-search input {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--text);
+  padding: 11px 12px;
+}
+.token-picker-quick {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.token-picker-quick button {
+  min-width: 70px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel2);
+  color: var(--text);
+  padding: 10px;
+  font-weight: 700;
+}
+.token-picker-list-wrap {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.token-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(46vh, 520px);
+  overflow-y: auto;
+  min-height: 0;
+}
+.token-picker-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--text);
+  text-align: left;
+}
+.token-picker-badge {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--line);
+  color: var(--text);
+  font-weight: 800;
+}
+.token-picker-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.token-picker-copy strong,
+.token-picker-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.token-picker-copy small,
+.token-picker-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.token-picker-note {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
 .pool-quote-form {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;

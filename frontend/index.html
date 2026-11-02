@@ -120,15 +120,19 @@
             <p class="eyebrow">POOL CHECK · BASE SEPOLIA · UNISWAP V3</p>
             <h3>Swap token ERC-20 testnet</h3>
             <p class="muted">Lookup pool memakai factory Uniswap V3 dan quote exact-input dari QuoterV2 Base Sepolia. Swap memakai router tetap Uniswap SwapRouter02. Hanya Base Sepolia; tidak ada mainnet.</p>
-            <div class="two">
-              <label>Cari / pilih Token A
-                <select id="poolTokenA" aria-label="Pilih token A"></select>
-              </label>
-              <label>Cari / pilih Token B
-                <select id="poolTokenB" aria-label="Pilih token B"></select>
-              </label>
+            <div class="token-select-fields">
+              <div class="token-select-field">
+                <span>Token A</span>
+                <button id="chooseTokenABtn" class="token-select-trigger" type="button" aria-haspopup="dialog" aria-controls="tokenPickerModal">Pilih token</button>
+                <select id="poolTokenA" aria-label="Token A terpilih" hidden></select>
+              </div>
+              <div class="token-select-field">
+                <span>Token B</span>
+                <button id="chooseTokenBBtn" class="token-select-trigger" type="button" aria-haspopup="dialog" aria-controls="tokenPickerModal">Pilih token</button>
+                <select id="poolTokenB" aria-label="Token B terpilih" hidden></select>
+              </div>
             </div>
-            <p class="muted">Pilih WETH / USDC dari menu atau ketik simbol untuk mencari. Token lain dapat di-import berdasarkan kontrak Base Sepolia.</p>
+            <p class="muted">Cari token berdasarkan nama, simbol, atau alamat. Ada pilihan cepat WETH / USDC; token lain bisa di-import dari kontrak Base Sepolia.</p>
             <p id="poolTokenDetails" class="muted">Pilih token untuk melihat alamat kontraknya.</p>
             <details class="token-import">
               <summary>Token tidak ada? Import token Base Sepolia</summary>
@@ -761,6 +765,28 @@
     </main>
 
     <!-- ============ MODALS ============ -->
+    <div id="tokenPickerModal" class="modal token-picker-modal" role="dialog" aria-modal="true" aria-labelledby="tokenPickerTitle" hidden>
+      <div class="modal-card token-picker-card">
+        <div class="row-between">
+          <h3 id="tokenPickerTitle">Pilih token</h3>
+          <button class="secondary modal-close" data-close="tokenPickerModal" type="button" aria-label="Tutup pemilih token">Tutup</button>
+        </div>
+        <label class="token-picker-search">Cari token
+          <input id="tokenPickerSearch" type="search" placeholder="Cari nama, simbol, atau alamat" autocomplete="off" />
+        </label>
+        <div>
+          <p class="eyebrow">PILIHAN CEPAT</p>
+          <div id="tokenPickerQuick" class="token-picker-quick"></div>
+        </div>
+        <div class="token-picker-list-wrap">
+          <p class="eyebrow">TOKEN TERSEDIA</p>
+          <div id="tokenPickerList" class="token-picker-list"></div>
+          <p id="tokenPickerEmpty" class="muted" hidden>Token tidak ditemukan. Import alamat kontrak Base Sepolia dari form sebelumnya.</p>
+        </div>
+        <p class="muted token-picker-note">Daftar berisi token testnet bawaan dan token yang kamu import. Simbol token bukan jaminan keaslian; periksa alamat kontrak.</p>
+      </div>
+    </div>
+
     <div id="candidateModal" class="modal" hidden>
       <div class="modal-card">
         <div class="row-between">
