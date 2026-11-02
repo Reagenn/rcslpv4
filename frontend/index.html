@@ -30,12 +30,19 @@
         <p class="muted small">Gunakan password unik. Password disimpan sebagai hash di server lokal ini.</p>
       </div>
     </section>
-    <div id="accountBar" class="account-bar" hidden>
+    <nav id="accountBar" class="account-bar" aria-label="Navigasi akun" hidden>
       <strong id="accountLabel"></strong>
-      <a href="/">Desk</a><a id="myProfileLink" href="/">Profil publik</a><a href="/following">Following</a><a href="/leaderboard">Leaderboard simulasi</a>
-      <button id="editProfileBtn" type="button">Edit profil &amp; privasi</button>
-      <button id="logoutBtn" type="button">Keluar</button>
-    </div>
+      <div class="account-nav-links">
+        <a data-account-nav href="/">Desk</a>
+        <a data-account-nav id="myProfileLink" href="/">Profil publik</a>
+        <a data-account-nav href="/following">Following</a>
+        <a data-account-nav href="/leaderboard">Leaderboard</a>
+      </div>
+      <div class="account-nav-actions">
+        <button id="editProfileBtn" type="button">Edit profil</button>
+        <button id="logoutBtn" type="button">Keluar</button>
+      </div>
+    </nav>
     <section id="socialScreen" class="social-screen" hidden>
       <div class="social-card">
         <a href="/" class="muted">← Kembali ke desk</a>
@@ -1033,9 +1040,9 @@
       </div>
     </div>
 
-    <section id="profileEditor" class="account-screen" hidden>
+    <section id="profileEditor" class="account-screen" role="dialog" aria-modal="true" aria-labelledby="profileEditorTitle" hidden>
       <div class="account-card profile-editor-card">
-        <div class="account-heading"><div><p class="eyebrow">AKUN</p><h2>Edit profil dan privasi</h2></div><button id="closeProfileBtn" type="button">Tutup</button></div>
+        <div class="account-heading"><div><p class="eyebrow">AKUN</p><h2 id="profileEditorTitle">Edit profil dan privasi</h2></div><button id="closeProfileBtn" type="button">Tutup</button></div>
         <form id="profileForm">
           <label>Nama tampilan <input id="profileDisplayName" maxlength="40" required /></label>
           <label>Discord <input id="profileDiscord" maxlength="64" placeholder="username Discord (opsional)" /></label>

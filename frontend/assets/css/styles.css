@@ -56,19 +56,69 @@ body {
 .form-error { min-height: 1.4em; color: var(--danger); }
 .small { font-size: 12px; }
 .account-bar {
-  position: relative;
-  z-index: 2;
+  position: sticky;
+  top: 0;
+  z-index: 40;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  max-width: 1400px;
-  margin: 12px auto 0;
-  padding: 0 20px;
+  gap: 18px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 10px max(20px, calc((100% - 1400px) / 2));
+  border-bottom: 1px solid var(--line);
+  background: rgb(10 10 12 / 94%);
+  box-shadow: 0 8px 24px #0005;
+  backdrop-filter: blur(16px);
 }
-.account-bar a, .social-card a { color: var(--teal); text-decoration: none; }
-.account-bar strong { margin-right: auto; }
+.account-bar strong {
+  flex: 0 0 auto;
+  margin-right: auto;
+  color: var(--text);
+  font-size: 13px;
+}
+.account-nav-links, .account-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.account-bar a {
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .15s ease, color .15s ease;
+}
+.account-bar a:hover, .account-bar a.active {
+  background: var(--panel2);
+  color: var(--text);
+}
+.account-bar a.active { box-shadow: inset 0 -2px var(--accent); }
+.account-nav-actions button { white-space: nowrap; }
+.account-nav-actions #editProfileBtn { border-color: rgb(242 118 10 / 45%); }
+#profileEditor {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  padding: 18px;
+  overflow-y: auto;
+  background: rgb(0 0 0 / 72%);
+  backdrop-filter: blur(5px);
+}
+.profile-editor-card {
+  width: min(100%, 680px);
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+}
+#profileEditor .account-card form { gap: 6px; }
+#profileEditor .check-row { margin: 4px 0; }
+.social-card a { color: var(--teal); text-decoration: none; }
 .account-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .check-row { display: flex; align-items: center; gap: 8px; }
 .check-row input { width: auto; }
@@ -80,9 +130,20 @@ body {
 .social-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .social-item { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); }
 .social-item h3, .social-item p { margin: 4px 0; }
+@media (max-width: 900px) {
+  .account-bar { flex-wrap: wrap; gap: 6px 12px; padding: 8px 16px; }
+  .account-bar strong { flex: 1 0 100%; }
+  .account-nav-links { order: 2; flex: 1 1 auto; flex-wrap: wrap; }
+  .account-nav-actions { order: 3; }
+}
 @media (max-width: 600px) {
-  .account-bar { justify-content: flex-start; padding: 0 12px; }
-  .account-bar strong { width: 100%; }
+  .account-bar { align-items: stretch; padding: 8px 10px; }
+  .account-nav-links { gap: 2px; }
+  .account-bar a { padding: 8px; font-size: 12px; }
+  .account-nav-actions { width: 100%; }
+  .account-nav-actions button { flex: 1; }
+  #profileEditor { padding: 10px; }
+  .profile-editor-card { max-height: calc(100vh - 20px); }
   .account-card, .social-card { padding: 20px; }
   .social-banner { margin-inline: -20px; }
 }

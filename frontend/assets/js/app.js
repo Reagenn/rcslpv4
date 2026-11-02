@@ -3387,6 +3387,15 @@ async function loadProfileEditor() {
   $("showOnLeaderboard").checked = profile.showOnLeaderboard === true;
   $("profileMessage").textContent = "";
   $("profileEditor").hidden = false;
+  $("profileDisplayName").focus();
+}
+function markAccountNav(path) {
+  document.querySelectorAll("[data-account-nav]").forEach((link) => {
+    const active = new URL(link.href).pathname === path;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
 }
 async function bootstrapAccount() {
   const me = await api("/api/auth/me");
@@ -3399,6 +3408,7 @@ async function bootstrapAccount() {
       $("accountLabel").textContent = "@" + currentAccount.username;
       $("myProfileLink").href = "/u/" + encodeURIComponent(currentAccount.username);
     }
+    markAccountNav(path);
     if (path === "/following" && !currentAccount) return showAuth("Masuk untuk melihat akun yang kamu ikuti.");
     await renderSocialRoute();
     return;
@@ -3410,6 +3420,7 @@ async function bootstrapAccount() {
   $("accountBar").hidden = false;
   $("accountLabel").textContent = "@" + currentAccount.username;
   $("myProfileLink").href = "/u/" + encodeURIComponent(currentAccount.username);
+  markAccountNav(path);
   await loadState();
   refreshRealtime();
   startRealtime();
@@ -3438,8 +3449,15 @@ function bindAccountUi() {
     location.href = "/";
   });
   $("editProfileBtn").addEventListener("click", () => loadProfileEditor().catch((error) => showToast(error.message, true)));
-  $("closeProfileBtn").addEventListener("click", () => { $("profileEditor").hidden = true; });
-  $("profileEditor").addEventListener("click", (event) => { if (event.target === $("profileEditor")) $("profileEditor").hidden = true; });
+  const closeProfileEditor = () => {
+    $("profileEditor").hidden = true;
+    $("editProfileBtn").focus();
+  };
+  $("closeProfileBtn").addEventListener("click", closeProfileEditor);
+  $("profileEditor").addEventListener("click", (event) => { if (event.target === $("profileEditor")) closeProfileEditor(); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("profileEditor").hidden) closeProfileEditor();
+  });
   $("profileForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = {
