@@ -49,6 +49,13 @@ const { spawn } = require("child_process");
     for (const route of ["/", "/following", "/leaderboard", "/u/alice"]) {
       const page = await fetch(base + route);
       assert.equal(page.status, 200, "SPA route is served: " + route);
+      const html = await page.text();
+      assert(html.includes('href="/assets/css/styles.css"'), "route uses root-relative stylesheet: " + route);
+      assert(html.includes('src="/assets/js/app.js"'), "route uses root-relative app script: " + route);
+    }
+    for (const asset of ["/assets/css/styles.css", "/assets/js/app.js"]) {
+      const response = await fetch(base + asset);
+      assert.equal(response.status, 200, "root asset is served: " + asset);
     }
 
     let result = await request("/api/state");
