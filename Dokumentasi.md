@@ -203,8 +203,17 @@ persisten di `data.json`. Frontend: `renderBalances()`,
 
 Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Saat Base
 Sepolia (84532) aktif, UI membaca alamat/saldo native, pool, saldo token,
-allowance, dan quote melalui RPC wallet. Pemeriksa pool Uniswap V3 memakai
-factory `0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24`; quote exact-input memakai
+allowance, dan quote melalui RPC wallet. Token A/B dipilih dari menu WETH dan
+USDC testnet; daftar bisa ditambah dengan import alamat kontrak. Kode
+kontrak, decimals, balanceOf, dan allowance diperiksa lewat RPC Base Sepolia;
+label token tidak memverifikasi keaslian. Token import hanya disimpan selama
+tab terbuka. Alamat bawaan: WETH
+`0x4200000000000000000000000000000000000006` (lihat [Base contract
+docs](https://docs.base.org/specifications/reference/base-contracts)) dan USDC
+`0x036CbD53842c5426634e7929541eC2318f3dCF7e` (lihat [Circle USDC
+addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)).
+Pemeriksa pool Uniswap V3 memakai factory
+`0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24`; quote exact-input memakai
 QuoterV2 `0xC5290058841028F1614F3A6F0F5816cAd0df5E27`. Router eksekusi tetap
 SwapRouter02 `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` (alamat Base Sepolia
 dari [deployment docs Uniswap](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments)).

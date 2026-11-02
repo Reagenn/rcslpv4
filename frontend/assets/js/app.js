@@ -52,6 +52,11 @@ const BASE_SEPOLIA_CHAIN_ID = "0x14a34";
 const BASE_SEPOLIA_UNISWAP_V3_FACTORY = "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24";
 const BASE_SEPOLIA_UNISWAP_V3_QUOTER = "0xC5290058841028F1614F3A6F0F5816cAd0df5E27";
 const BASE_SEPOLIA_UNISWAP_V3_ROUTER = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4";
+const BASE_SEPOLIA_TOKENS = [
+  { symbol: "WETH", name: "Wrapped Ether", address: "0x4200000000000000000000000000000000000006", decimals: 18 },
+  { symbol: "USDC", name: "USD Coin (testnet)", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6 },
+];
+let importedBaseSepoliaTokens = [];
 let baseSepoliaPoolContext = null;
 let baseSepoliaSwapQuote = null;
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
@@ -329,6 +334,109 @@ function abiWord(data, index) {
 function abiAddress(data) {
   return "0x" + abiWord(data, 0).slice(-40);
 }
+function allBaseSepoliaTokens() {
+  return BASE_SEPOLIA_TOKENS.concat(importedBaseSepoliaTokens);
+}
+function tokenByAddress(address) {
+  return allBaseSepoliaTokens().find((token) => token.address.toLowerCase() === String(address || "").toLowerCase());
+}
+function populateBaseSepoliaTokenSelectors() {
+  [$("poolTokenA"), $("poolTokenB")].forEach((select) => {
+    select.replaceChildren();
+    allBaseSepoliaTokens().forEach((token) => {
+      const option = document.createElement("option");
+      option.value = token.address;
+      option.textContent = token.symbol + " · " + token.name + " · " + token.address.slice(0, 6) + "…" + token.address.slice(-4);
+      select.appendChild(option);
+    });
+  });
+  $("poolTokenA").value = BASE_SEPOLIA_TOKENS[0].address;
+  $("poolTokenB").value = BASE_SEPOLIA_TOKENS[1].address;
+  renderPoolTokenDetails();
+}
+function renderPoolTokenDetails() {
+  const tokenA = tokenByAddress($("poolTokenA").value);
+  const tokenB = tokenByAddress($("poolTokenB").value);
+  const lines = [tokenA, tokenB].filter(Boolean).map((token, index) =>
+    "Token " + (index ? "B" : "A") + " · " + token.symbol + " · " + token.address + " · " + token.decimals + " decimals");
+  $("poolTokenDetails").textContent = lines.join("\n") || "Pilih token untuk melihat alamat kontraknya.";
+  const direction = $("poolQuoteDirection");
+  if (direction && tokenA && tokenB) {
+    direction.options[0].textContent = tokenA.symbol + " → " + tokenB.symbol;
+    direction.options[1].textContent = tokenB.symbol + " → " + tokenA.symbol;
+  }
+}
+function decodeAbiText(result) {
+  const body = String(result || "").replace(/^0x/, "");
+  if (!body || body.length % 2) throw new Error("Metadata token ABI tidak valid.");
+  let hex = "";
+  if (body.length === 64) {
+    hex = body;
+  } else {
+    const offset = Number(BigInt("0x" + abiWord(result, 0)));
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Offset metadata token tidak valid.");
+    const lengthStart = offset * 2;
+    const length = Number(BigInt("0x" + body.slice(lengthStart, lengthStart + 64)));
+    if (!Number.isSafeInteger(length) || length < 0 || length > 256) throw new Error("Metadata token terlalu panjang.");
+    hex = body.slice(lengthStart + 64, lengthStart + 64 + length * 2);
+  }
+  const bytes = new Uint8Array(hex.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) || []);
+  return new TextDecoder().decode(bytes).replace(/\0+$/g, "").trim();
+}
+async function importBaseSepoliaToken() {
+  const button = $("addCustomTokenBtn");
+  const address = $("customTokenAddress").value.trim();
+  const expectedAccount = walletAddress;
+  const status = $("customTokenStatus");
+  const setStatus = (message, isError) => {
+    status.textContent = message;
+    status.classList.toggle("error", !!isError);
+  };
+  if (!walletProvider || !walletAddress) return setStatus("Hubungkan wallet terlebih dahulu.", true);
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return setStatus("Masukkan alamat kontrak EVM yang valid.", true);
+  button.disabled = true;
+  setStatus("Memverifikasi kontrak dan metadata token di Base Sepolia…");
+  try {
+    await currentBaseSepoliaAccount(expectedAccount);
+    const code = await walletProvider.request({ method: "eth_getCode", params: [address, "latest"] });
+    if (!code || /^0x0*$/i.test(code)) throw new Error("Alamat tersebut bukan kontrak yang terpasang di Base Sepolia.");
+    const known = tokenByAddress(address);
+    if (known) {
+      setStatus(known.symbol + " sudah ada di daftar token. Pilih token itu dari menu.");
+      return;
+    }
+    const [symbolResult, nameResult, decimalsResult] = await Promise.all([
+      baseSepoliaCall(address, "0x95d89b41").catch(() => null),
+      baseSepoliaCall(address, "0x06fdde03").catch(() => null),
+      baseSepoliaCall(address, "0x313ce567"),
+    ]);
+    const decimals = Number(BigInt("0x" + abiWord(decimalsResult, 0)));
+    if (!Number.isInteger(decimals) || decimals > 36) throw new Error("Decimals token tidak valid atau di luar batas dukungan.");
+    const [balanceResult, allowanceResult] = await Promise.all([
+      baseSepoliaCall(address, "0x70a08231" + addressAbiWord(expectedAccount)),
+      baseSepoliaCall(address, "0xdd62ed3e" + addressAbiWord(expectedAccount) + addressAbiWord(BASE_SEPOLIA_UNISWAP_V3_ROUTER)),
+    ]);
+    abiWord(balanceResult, 0);
+    abiWord(allowanceResult, 0);
+    await currentBaseSepoliaAccount(expectedAccount);
+    const symbol = symbolResult ? decodeAbiText(symbolResult) : "";
+    const name = nameResult ? decodeAbiText(nameResult) : "";
+    const token = { symbol: symbol || "TOKEN", name: name || "Imported token", address, decimals };
+    importedBaseSepoliaTokens.push(token);
+    const previousA = $("poolTokenA").value;
+    const previousB = $("poolTokenB").value;
+    populateBaseSepoliaTokenSelectors();
+    $("poolTokenA").value = previousA;
+    $("poolTokenB").value = previousB;
+    renderPoolTokenDetails();
+    $("customTokenAddress").value = "";
+    setStatus("Token berhasil diverifikasi dan ditambahkan untuk tab ini. Pilih token dari menu.");
+  } catch (e) {
+    setStatus(e && e.message ? e.message : "Gagal memverifikasi token pada RPC Base Sepolia.", true);
+  } finally {
+    button.disabled = false;
+  }
+}
 async function baseSepoliaCall(to, data) {
   return walletProvider.request({ method: "eth_call", params: [{ to, data }, "latest"] });
 }
@@ -341,6 +449,7 @@ async function checkBaseSepoliaPool() {
   const tokenA = $("poolTokenA").value.trim();
   const tokenB = $("poolTokenB").value.trim();
   const fee = Number($("poolFeeTier").value);
+  const checkAccount = walletAddress.toLowerCase();
   const addressPattern = /^0x[a-fA-F0-9]{40}$/;
   if (!walletProvider || !walletAddress) return setPoolCheckResult("Hubungkan wallet terlebih dahulu.", true);
   if (!addressPattern.test(tokenA) || !addressPattern.test(tokenB)) return setPoolCheckResult("Masukkan dua alamat kontrak ERC-20 yang valid.", true);
@@ -394,6 +503,10 @@ async function checkBaseSepoliaPool() {
         priceText = price.toLocaleString("en-US", { maximumSignificantDigits: 8 });
       }
     }
+    if ($("poolTokenA").value.toLowerCase() !== tokenA.toLowerCase() || $("poolTokenB").value.toLowerCase() !== tokenB.toLowerCase() || Number($("poolFeeTier").value) !== fee) {
+      throw new Error("Pilihan token atau fee tier berubah saat pemeriksaan. Periksa pool kembali.");
+    }
+    await currentBaseSepoliaAccount(checkAccount);
     baseSepoliaPoolContext = { tokenA: tokenA.toLowerCase(), tokenB: tokenB.toLowerCase(), fee, poolAddress, token0, token1, decimals0, decimals1, spotPrice };
     const quoteReady = spotPrice > 0 && rawLiquidity > 0n;
     $("poolQuoteBtn").disabled = !quoteReady;
@@ -510,8 +623,11 @@ async function quoteBaseSepoliaSwap() {
     setSwapApprovalStatus(!enoughBalance ? "Saldo token input tidak cukup untuk jumlah ini." : enoughAllowance ?
       "Allowance cukup. Quote berlaku 2 menit; lanjutkan swap bila detailnya benar." :
       "Saldo cukup. Approve akan memberi izin tepat sebesar jumlah input ke router tetap.");
+    const tokenInInfo = tokenByAddress(tokenIn);
+    const tokenOutInfo = tokenByAddress(tokenOut);
     setPoolQuoteResult(
-      "Input: " + amountText + " · output quote ≈ " + amountOutText + "\nMinimum output (slippage " + (slippageBps / 100).toFixed(2) + "%): " + minOutText +
+      "Input: " + amountText + " " + (tokenInInfo ? tokenInInfo.symbol : "token") + " · output quote ≈ " + amountOutText + " " + (tokenOutInfo ? tokenOutInfo.symbol : "token") +
+      "\nMinimum output (slippage " + (slippageBps / 100).toFixed(2) + "%): " + minOutText + " " + (tokenOutInfo ? tokenOutInfo.symbol : "token") +
       "\nPrice impact indikatif: " + impactText + "\nGas estimate QuoterV2: " + gasEstimate.toLocaleString("en-US") + " units (bukan biaya final)" +
       "\nRouter: Uniswap SwapRouter02 · quote berlaku 2 menit · transaksi hanya di Base Sepolia.",
     );
@@ -700,19 +816,22 @@ function initBrowserWallet() {
   renderBrowserWallet();
   $("walletConnectBtn").addEventListener("click", connectBrowserWallet);
   $("walletSwitchBtn").addEventListener("click", switchToBaseSepolia);
+  populateBaseSepoliaTokenSelectors();
   $("poolCheckBtn").addEventListener("click", checkBaseSepoliaPool);
   $("poolQuoteBtn").addEventListener("click", quoteBaseSepoliaSwap);
+  $("addCustomTokenBtn").addEventListener("click", importBaseSepoliaToken);
   $("swapApproveBtn").addEventListener("click", approveBaseSepoliaSwap);
   $("swapExecuteBtn").addEventListener("click", executeBaseSepoliaSwap);
   const invalidatePoolCheck = () => {
     baseSepoliaPoolContext = null;
     $("poolQuoteBtn").disabled = true;
     clearBaseSepoliaSwapQuote("Pasangan atau fee tier berubah. Periksa pool dan quote kembali.");
+    setPoolCheckResult("Pasangan token atau fee tier berubah. Periksa ulang pool.");
     setPoolQuoteResult("Pasangan atau fee tier berubah. Periksa ulang pool.");
   };
   const invalidateSwapQuote = () => clearBaseSepoliaSwapQuote("Input berubah. Buat quote baru sebelum transaksi.");
-  $("poolTokenA").addEventListener("input", invalidatePoolCheck);
-  $("poolTokenB").addEventListener("input", invalidatePoolCheck);
+  $("poolTokenA").addEventListener("change", () => { invalidatePoolCheck(); renderPoolTokenDetails(); });
+  $("poolTokenB").addEventListener("change", () => { invalidatePoolCheck(); renderPoolTokenDetails(); });
   $("poolFeeTier").addEventListener("change", invalidatePoolCheck);
   $("poolQuoteAmount").addEventListener("input", invalidateSwapQuote);
   $("poolQuoteDirection").addEventListener("change", invalidateSwapQuote);

@@ -1903,6 +1903,24 @@ input[type="range"] {
 .pool-preflight-actions label {
   min-width: 150px;
 }
+.token-import {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.token-import summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.token-import .pool-preflight-actions label {
+  flex: 1 1 240px;
+}
+#poolTokenDetails {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
 .pool-quote-form {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
