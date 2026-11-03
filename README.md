@@ -31,8 +31,11 @@ npm install   # tidak ada dependensi eksternal; memastikan struktur siap
 npm start     # menjalankan backend di http://localhost:3000
 ```
 
-Lalu buka **http://localhost:3000** di browser dan daftar akun. Akun pertama
-mengambil salinan state demo lama (`backend/data/data.json`); akun selanjutnya
+Lalu buka **http://localhost:3000** di browser dan daftar akun. Pemindai APR Uniswap v4 menggunakan GeckoTerminal public REST API, jadi tidak memerlukan Subgraph, API key, atau konfigurasi `.env`. Data dipindai di beberapa network dan di-cache selama 5 menit; API publik dapat membatasi permintaan.
+
+APR yang ditampilkan adalah estimasi dari volume 24 jam × fee tier pool ÷ TVL lalu dianualisasi. Ini bukan fee realisasi atau proyeksi keuntungan; hook/dynamic fee dapat membuat estimasi meleset. Auto Trading LP masih membuka posisi **simulasi**, bukan transaksi Uniswap v4 on-chain.
+
+Akun pertama mengambil salinan state demo lama (`backend/data/data.json`); akun selanjutnya
 mendapat desk baru yang privat. State akun disimpan di `backend/data/users.json`
 dan `backend/data/desks/` (jangan commit/unggah file tersebut).
 

@@ -1,5 +1,5 @@
 "use strict";
-const CACHE_NAME = "rcslpv4-shell-v2";
+const CACHE_NAME = "rcslpv4-shell-v4";
 const SHELL_ASSETS = [
   "/",
   "/index.html",

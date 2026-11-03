@@ -2138,6 +2138,10 @@ input[type="range"] {
   gap: 8px;
   min-height: 0;
 }
+.token-picker-status {
+  margin: -4px 0 0;
+  font-size: 12px;
+}
 .token-picker-list {
   display: flex;
   flex-direction: column;

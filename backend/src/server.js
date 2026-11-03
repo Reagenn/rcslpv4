@@ -14,6 +14,26 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const crypto = require("crypto");
+const { UNISWAP_V4_NETWORKS, normalizeGeckoPools } = require("./uniswap-v4");
+
+function loadLocalEnv() {
+  const envFile = path.join(__dirname, "..", "..", ".env");
+  if (!fs.existsSync(envFile)) return;
+  const contents = fs.readFileSync(envFile, "utf8").replace(/^\uFEFF/, "");
+  for (const line of contents.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    let value = match[2];
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, "").trimEnd();
+    }
+    while (value.startsWith(match[1] + "=")) value = value.slice(match[1].length + 1).trim();
+    process.env[match[1]] = value;
+  }
+}
+loadLocalEnv();
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
@@ -41,6 +61,7 @@ const DEX_CHAIN_MAP = {
 // GoPlus chain ids (hanya chain yang didukung GoPlus; lainnya -> SECURITY UNAVAILABLE)
 const GOPLUS_CHAIN_ID = { SOL: 101, BASE: 8453, BSC: 56, ETH: 1 };
 const METEORA_DATAPI = "https://dlmm.datapi.meteora.ag";
+let uniswapV4AprCache = { at: 0, data: null };
 
 function uid(prefix) {
   return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
@@ -72,7 +93,7 @@ function defaultSettings() {
   // (setara only_consider di hosted), guardrail 150 / 50.000 / 500.
   // Byte TP +22% / SL 28%. Kopi nominal 250, maks 3, preset wide, batas harian 150.
   return {
-    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500 },
+    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500, source: "DEX", minApr: 20 },
     tpSl: { armed: false, defaultTpPct: 22, defaultSlPct: 28 },
     copyTrading: { enabled: false, leaderId: null, amountPerCopy: 250, maxPositions: 3, rangePreset: "wide", dailyLossLimit: 150 },
   };
@@ -668,6 +689,59 @@ function marketScore(pair) {
     : vol >= 1e4 ? 50
     : 25;
   return Math.round((liqScore + volScore) / 2);
+}
+
+async function runUniswapV4AprScan() {
+  const now = Date.now();
+  if (uniswapV4AprCache.data && now - uniswapV4AprCache.at < 5 * 60 * 1000) return uniswapV4AprCache.data;
+
+  const results = await Promise.allSettled(UNISWAP_V4_NETWORKS.map(async (network) => {
+    const url = "https://api.geckoterminal.com/api/v2/networks/" + network.networkId +
+      "/dexes/" + network.dexId + "/pools?include=base_token%2Cquote_token";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { accept: "application/json;version=20230302" },
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const payload = await response.json();
+      return { network, pools: normalizeGeckoPools(network, payload, now) };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }));
+
+  const successful = [];
+  const failedNetworks = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") successful.push(result.value);
+    else failedNetworks.push({
+      chain: UNISWAP_V4_NETWORKS[index].chainName,
+      error: result.reason && result.reason.name === "AbortError" ? "timeout" : (result.reason && result.reason.message) || "request gagal",
+    });
+  });
+  if (!successful.length) {
+    const error = new Error("Gagal mengambil data pool Uniswap v4 dari GeckoTerminal untuk semua network.");
+    error.statusCode = 502;
+    error.failedNetworks = failedNetworks;
+    throw error;
+  }
+
+  const pools = successful.flatMap((result) => result.pools)
+    .sort((a, b) => b.apr - a.apr)
+    .slice(0, 100);
+  const data = {
+    fetchedAt: new Date().toISOString(),
+    source: "GeckoTerminal public REST API",
+    networksScanned: successful.map((result) => result.network.chainName),
+    failedNetworks,
+    aprFormula: "Estimasi APR = (volume 24 jam × fee tier pool) / TVL × 365; bukan fee realisasi atau proyeksi hasil.",
+    pools,
+  };
+  uniswapV4AprCache = { at: now, data };
+  return data;
 }
 
 async function runCandidateAgent() {
@@ -1655,6 +1729,7 @@ async function handleRequest(req, res) {
       const tp = merged.tpSl;
       const ct = merged.copyTrading;
       const numFields = [
+        ["autoTrading.minApr", at.minApr],
         ["autoTrading.minScore", at.minScore],
         ["autoTrading.amountPerPosition", at.amountPerPosition],
         ["autoTrading.maxPositions", at.maxPositions],
@@ -1673,6 +1748,8 @@ async function handleRequest(req, res) {
         }
       }
       if (at.minScore > 100) return sendJson(res, 400, { error: "minScore harus 0..100." });
+      if (at.minApr > 100000) return sendJson(res, 400, { error: "minApr harus 0..100000." });
+      if (at.source !== "DEX" && at.source !== "UNISWAP_V4") return sendJson(res, 400, { error: "Sumber auto trading tidak valid." });
       if (at.amountPerPosition <= 0) return sendJson(res, 400, { error: "amountPerPosition harus > 0." });
       if (ct.amountPerCopy <= 0) return sendJson(res, 400, { error: "amountPerCopy harus > 0." });
       if (!Number.isInteger(at.maxPositions) || at.maxPositions < 1 || at.maxPositions > 20) {
@@ -1716,12 +1793,38 @@ async function handleRequest(req, res) {
         });
       }
       let agentOut;
+      let v4Pools = [];
       try {
         agentOut = await runCandidateAgent();
-      } catch (_) {
-        return sendJson(res, 502, { error: "Agent analysis gagal. Coba lagi nanti." });
+        if (at.source === "UNISWAP_V4") v4Pools = (await runUniswapV4AprScan()).pools;
+      } catch (e) {
+        return sendJson(res, e.statusCode || 502, {
+          error: e.message || "Agent analysis gagal. Coba lagi nanti.",
+          failedNetworks: e.failedNetworks || [],
+        });
       }
-      const candidates = agentOut.recommendations || [];
+      let candidates = (agentOut.recommendations || []).concat(agentOut.pending_candidates || []);
+      if (at.source === "UNISWAP_V4") {
+        const bestByToken = new Map();
+        for (const pool of v4Pools) {
+          if (pool.apr < Number(at.minApr || 0) || pool.tvlUsd < Number(at.minLiquidity || 0)) continue;
+          for (const token of [pool.token0, pool.token1]) {
+            const address = String(token && token.id || "").toLowerCase();
+            if (!/^0x[a-f0-9]{40}$/.test(address) || /^0x0{40}$/.test(address)) continue;
+            const key = pool.chain + ":" + address;
+            const previous = bestByToken.get(key);
+            if (!previous || pool.apr > previous.apr) bestByToken.set(key, pool);
+          }
+        }
+        candidates = candidates.filter((candidate) => bestByToken.has(String(candidate.chain || "") + ":" + String(candidate.address || "").toLowerCase()))
+          .map((candidate) => {
+            const key = String(candidate.chain || "") + ":" + String(candidate.address || "").toLowerCase();
+            const pool = bestByToken.get(key);
+            return { ...candidate, uniswap_v4_apr: pool.apr, uniswap_v4_pool_id: pool.poolId, uniswap_v4_tvl_usd: pool.tvlUsd };
+          }).sort((a, b) => b.uniswap_v4_apr - a.uniswap_v4_apr);
+      } else {
+        candidates = agentOut.recommendations || [];
+      }
       const opened = [];
       const skipped = [];
       const openAddrs = new Set(state.positions.filter((p) => p.status === "open").map((p) => (p.address || "").toLowerCase()));
@@ -1735,6 +1838,10 @@ async function handleRequest(req, res) {
         const sym = c.symbol || "???";
         const score = c.recommendation_score;
         const aVerdict = c.agent_analysis ? c.agent_analysis.verdict : null;
+        if (at.source === "UNISWAP_V4" && (c.uniswap_v4_apr == null || c.uniswap_v4_apr < Number(at.minApr || 0))) {
+          skipped.push({ symbol: sym, reason: "APR Uniswap v4 tidak memenuhi batas minimum." });
+          continue;
+        }
         if (!CHAINS.includes(c.chain)) {
           skipped.push({ symbol: sym, reason: "Chain " + c.chain + " di luar 7 chain simulasi." });
           continue;
@@ -1789,7 +1896,7 @@ async function handleRequest(req, res) {
           name: c.name,
           pair: c.pair_symbol || "",
           pairUrl: c.dexscreener_url || "",
-          poolAddress: c.primary_pool_address || null,
+          poolAddress: c.uniswap_v4_pool_id || c.primary_pool_address || null,
           amount: Number(at.amountPerPosition),
           price,
           minPrice: roundPrice(price * (1 - rangePct)),
@@ -1807,7 +1914,7 @@ async function handleRequest(req, res) {
           skipped.push({ symbol: sym, reason: r.error });
           continue;
         }
-        opened.push({ symbol: c.symbol, chain: c.chain, amount: Number(at.amountPerPosition), price });
+        opened.push({ symbol: c.symbol, chain: c.chain, amount: Number(at.amountPerPosition), price, apr: c.uniswap_v4_apr == null ? null : c.uniswap_v4_apr });
         if (c.address) openAddrs.add(c.address.toLowerCase());
         slots -= 1;
         allocated += Number(at.amountPerPosition);
@@ -2088,6 +2195,17 @@ async function handleRequest(req, res) {
         return sendJson(res, 200, data);
       } catch (e) {
         return sendJson(res, 502, { error: "DexScreener tidak dapat dihubungi. Coba lagi nanti." });
+      }
+    }
+
+    if (pathname === "/api/uniswap-v4/pools" && req.method === "GET") {
+      try {
+        return sendJson(res, 200, await runUniswapV4AprScan());
+      } catch (e) {
+        return sendJson(res, e.statusCode || 502, {
+          error: e.message || "Gagal mengambil data Uniswap v4.",
+          failedNetworks: e.failedNetworks || [],
+        });
       }
     }
 

@@ -5,10 +5,44 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { normalizeGeckoPools } = require("./src/uniswap-v4");
 
 (async () => {
   const root = process.cwd();
   const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
+  const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
+  assert(serverScript.includes("api.geckoterminal.com"), "Uniswap v4 scanner uses GeckoTerminal REST API");
+  assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "Uniswap v4 scanner does not use a Subgraph URL");
+  const scanNow = Date.parse("2026-01-03T00:00:00Z");
+  const geckoNetwork = { networkId: "base", chain: "BASE", chainName: "Base" };
+  const tokenId = "base_0x1111111111111111111111111111111111111111";
+  const quoteId = "base_0x2222222222222222222222222222222222222222";
+  const poolFixture = (address, name, createdAt) => ({
+    type: "pool",
+    attributes: {
+      address, name, pool_created_at: createdAt,
+      reserve_in_usd: "100000", volume_usd: { h24: "1000000" },
+    },
+    relationships: {
+      base_token: { data: { id: tokenId } },
+      quote_token: { data: { id: quoteId } },
+    },
+  });
+  const normalizedPools = normalizeGeckoPools(geckoNetwork, {
+    data: [
+      poolFixture("0xpool", "TEST / USD 0.01%", "2026-01-01T00:00:00Z"),
+      poolFixture("0xyoung", "TEST / USD 0.01%", "2026-01-02T12:00:00Z"),
+      poolFixture("0xunknown-fee", "TEST / USD", "2026-01-01T00:00:00Z"),
+    ],
+    included: [
+      { id: tokenId, type: "token", attributes: { address: "0x1111111111111111111111111111111111111111", symbol: "TEST" } },
+      { id: quoteId, type: "token", attributes: { address: "0x2222222222222222222222222222222222222222", symbol: "USD" } },
+    ],
+  }, scanNow);
+  assert.equal(normalizedPools.length, 1, "only pools with known fees and at least 24h age are included");
+  assert.equal(normalizedPools[0].estimatedFees24hUsd, 100, "estimated fees use volume multiplied by the fee tier");
+  assert.equal(normalizedPools[0].apr, 36.5, "estimated APR is annualized against TVL");
+  assert.equal(normalizedPools[0].chain, "BASE", "pool retains its network identity");
   for (const config of [
     'const BASE_MAINNET_CHAIN_ID = "0x2105"',
     "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
@@ -97,12 +131,15 @@ const { spawn } = require("child_process");
       displayName: "Alice Public", sharePositions: false, shareNetWorth: false, showOnLeaderboard: true,
     });
     assert.equal(result.response.status, 200, "save profile privacy");
-    result = await request("/api/settings", "POST", cookieA, { settings: { tpSl: { defaultTpPct: 37 } } });
+    result = await request("/api/settings", "POST", cookieA, { settings: { tpSl: { defaultTpPct: 37 }, autoTrading: { source: "UNISWAP_V4", minApr: 42 } } });
     assert.equal(result.response.status, 200, "save account A settings");
     result = await request("/api/settings", "GET", cookieB);
     assert.equal(result.data.settings.tpSl.defaultTpPct, 22, "account B settings isolated");
+    assert.equal(result.data.settings.autoTrading.source, "DEX", "account B keeps default auto-trading source");
     result = await request("/api/settings", "GET", cookieA);
     assert.equal(result.data.settings.tpSl.defaultTpPct, 37, "account A settings persist");
+    assert.equal(result.data.settings.autoTrading.source, "UNISWAP_V4", "account A can select Uniswap v4 source");
+    assert.equal(result.data.settings.autoTrading.minApr, 42, "account A APR threshold persists");
     result = await request("/api/lp/open", "POST", cookieA, {
       chain: "BASE", symbol: "TEST", address: "private-token-address", amount: 100,
       price: 2, minPrice: 1, maxPrice: 3,

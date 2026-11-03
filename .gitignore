@@ -1,6 +1,10 @@
 # Dependencies (none at runtime, but keep the tree clean)
 node_modules/
 
+# Local secrets and environment configuration
+.env
+.env.*.local
+
 # OS / editor artefacts
 .DS_Store
 Thumbs.db

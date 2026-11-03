@@ -170,7 +170,7 @@
                 <select id="poolTokenB" aria-label="Token B terpilih" hidden></select>
               </div>
             </div>
-            <p class="muted">Cari token berdasarkan nama, simbol, atau alamat. Ada pilihan cepat WETH / USDC; token lain bisa di-import dari kontrak Base Mainnet.</p>
+            <p class="muted">Cari token berdasarkan nama, simbol, atau alamat. Daftar memuat token Base dari Uniswap Default Token List; token lain juga bisa di-import dari alamat kontrak.</p>
             <p id="poolTokenDetails" class="muted">Pilih token untuk melihat alamat kontraknya.</p>
             <details class="token-import">
               <summary>Token tidak ada? Import token Base Mainnet</summary>
@@ -342,7 +342,7 @@
                     ><strong>Nara</strong><span class="crew-status"><span class="status-dot" id="dot-nara"></span><span id="crewStatus-nara">NONAKTIF</span></span></span
                   >
                   <span class="crew-role">Auto Trading LP</span>
-                  <span class="crew-desc">Memindai Top 10 kandidat agent, lalu membuka posisi LP simulasi sendiri untuk token yang lolos skor &amp; verdict.</span>
+                  <span class="crew-desc">Memindai kandidat DEX atau pool Uniswap v4 multi-network, lalu membuka posisi LP simulasi setelah guardrail lolos.</span>
                   <span class="crew-link">Atur agent →</span>
                 </button>
                 <button class="crew-card" data-agent="byte" type="button">
@@ -840,11 +840,12 @@
           <div id="tokenPickerQuick" class="token-picker-quick"></div>
         </div>
         <div class="token-picker-list-wrap">
-          <p class="eyebrow">TOKEN TERSEDIA</p>
+          <p class="eyebrow">TOKEN BASE · UNISWAP V3</p>
+          <p id="tokenPickerListStatus" class="muted token-picker-status" role="status" aria-live="polite">Memuat daftar token Base dari Uniswap…</p>
           <div id="tokenPickerList" class="token-picker-list"></div>
           <p id="tokenPickerEmpty" class="muted" hidden>Token tidak ditemukan. Import alamat kontrak Base Mainnet dari form sebelumnya.</p>
         </div>
-        <p class="muted token-picker-note">Daftar berisi token mainnet bawaan dan token yang kamu import. Simbol token bukan jaminan keaslian; periksa alamat kontrak.</p>
+        <p class="muted token-picker-note">Daftar Uniswap membantu menemukan token Base, tetapi bukan jaminan keamanan, harga, pool, atau likuiditas. Periksa alamat kontrak dan detail transaksi sebelum memakai aset nyata.</p>
       </div>
     </div>
 
@@ -919,10 +920,22 @@
           <label>Likuiditas minimum (USD) <input id="naraMinLiq" type="number" min="0" step="any" /></label>
           <label>Holder minimum (data tak tersedia = gagal) <input id="naraMinHolder" type="number" min="0" step="any" /></label>
         </div>
+        <div class="two">
+          <label>Sumber kandidat
+            <select id="naraSource">
+              <option value="DEX">DEX Screener (default)</option>
+              <option value="UNISWAP_V4">Uniswap v4 · estimasi APR multi-network</option>
+            </select>
+          </label>
+          <label>APR minimum Uniswap v4 (%) <input id="naraMinApr" type="number" min="0" max="100000" step="any" /></label>
+        </div>
+        <p class="muted">Pemindai menggunakan data volume dan TVL GeckoTerminal publik. APR indikatif = volume 24 jam × fee tier / TVL × 365; bukan fee realisasi atau jaminan hasil. Hook/dynamic fee dapat membuat estimasi meleset. Pemindaian pool mencakup network yang tersedia di GeckoTerminal; Auto Trading hanya memakai kandidat dari chain yang didukung feed dan guardrail aplikasi.</p>
         <div class="actions">
           <button id="naraSaveBtn" class="primary" type="button">Simpan pengaturan</button>
+          <button id="naraV4ScanBtn" type="button">Cari pool APR v4</button>
           <button id="naraRunBtn" type="button">Jalankan sekarang</button>
         </div>
+        <div id="naraV4Pools" class="run-out"></div>
         <div id="naraRunOut" class="run-out"></div>
         <h4>Log Nara</h4>
         <div id="naraLogs" class="agent-logs"></div>

@@ -107,7 +107,7 @@ lp-desk-local-v4/
 | `/api/reset` | POST | Kembali ke `defaultState()` bersih |
 | `/api/settings` | GET/POST | Baca/simpan settings 3 grup: `autoTrading`, `tpSl`, `copyTrading` (dengan validasi angka) |
 | `/api/agent-logs` | GET | 50 log aktivitas agent terakhir |
-| `/api/agent/auto-trading` | POST | Jalankan Nara: pindai Top 10 `runCandidateAgent()` + guardrail |
+| `/api/agent/auto-trading` | POST | Jalankan Nara: sumber DEX Screener atau pool estimasi APR Uniswap v4 multi-network + guardrail |
 | `/api/agent/tp-sl-check` | POST | Byte: repricing live + `evaluateTpSlOnFreshPrices()` |
 | `/api/agent/copy-trading` | POST | Jalankan Kopi: buka posisi copy dari profil leader |
 | `/api/leaders` | GET/POST | Daftar leader (terurut winrate) / tambah leader |
@@ -117,6 +117,7 @@ lp-desk-local-v4/
 | `/api/dex/search` | GET | Proxy pencarian DexScreener (`?q=`) |
 | `/api/dex/token` | GET | Proxy pair per alamat token DexScreener (`?address=`) |
 | `/api/candidates` | GET | Kandidat Top LP/Discover dari `runCandidateAgent()` (cache 5 menit) |
+| `/api/uniswap-v4/pools` | GET | Pool Uniswap v4 multi-network dan estimasi APR berbasis GeckoTerminal (cache 5 menit; tanpa API key/Subgraph) |
 | `/api/copylp/discover` | GET | Penemuan pool Copy LP: `discoverPools()` (Meteora datapi + DexScreener) |
 | `/api/copylp/range` | POST | Hitung range DLMM server-side: `computeRange()` |
 | `/api/copylp/open` | POST | Buka posisi dari pool Copy LP (`openPositionInternal()`), `poolAddress` tersimpan |
@@ -147,7 +148,7 @@ lp-desk-local-v4/
   "claimedFeesTotal": 0,
   "createdAt": "ISO",
   "settings": {
-    "autoTrading": { "enabled", "minScore", "amountPerPosition", "maxPositions", "chainFilter", "rangePreset", "verdictFilter", "dailyLossLimit", "minLiquidity", "minHolder" },
+    "autoTrading": { "enabled", "minScore", "amountPerPosition", "maxPositions", "chainFilter", "rangePreset", "verdictFilter", "dailyLossLimit", "minLiquidity", "minHolder", "source", "minApr" },
     "tpSl": { "armed", "defaultTpPct", "defaultSlPct" },
     "copyTrading": { "enabled", "leaderId", "amountPerCopy", "maxPositions", "rangePreset", "dailyLossLimit" }
   },
@@ -176,7 +177,7 @@ replaced_by_position_id, created_at, closed_at`). Data lama berstatus
 **Default settings** (menyamakan nilai hosted yang teramati): Nara
 `minScore 70, amountPerPosition 250, maxPositions 3, rangePreset "wide",
 verdictFilter "consider", dailyLossLimit 150, minLiquidity 50000,
-minHolder 500`; Byte `defaultTpPct 22, defaultSlPct 28`; Kopi
+minHolder 500, source "DEX", minApr 20`; Byte `defaultTpPct 22, defaultSlPct 28`; Kopi
 `amountPerCopy 250, maxPositions 3, rangePreset "wide",
 dailyLossLimit 150`. Filter verdict memakai kosakata verdict analisis
 hosted (`consider|review|avoid|ANY`); nilai lama (label DD) dimigrasikan
@@ -206,6 +207,13 @@ didukung **ditolak dengan pesan jelas** (tidak dipetakan diam-diam).
 Frontend: `searchLpTokens()`, `renderSearchResults()`, `tokenFromPair()`.
 Backend: `GET /api/dex/search`, `GET /api/dex/token`, `chainFromPair()`.
 Sumber: DexScreener.
+
+### Auto Trading: penemuan pool Uniswap v4 ber-APR tinggi
+Nara dapat memakai sumber kandidat `Uniswap v4 · estimasi APR multi-network`. Backend membaca daftar pool dari GeckoTerminal public REST API untuk Base, Ethereum, BNB Chain, Optimism, Arbitrum, Polygon, Avalanche, dan Unichain. Tidak perlu Subgraph atau API key; permintaan di-cache 5 menit. Pool dengan umur kurang dari 24 jam, TVL di bawah $10.000, volume tidak valid, atau fee tier yang tidak tercantum pada nama pool dikecualikan.
+
+APR adalah estimasi `(volume 24 jam × fee tier) / TVL × 365 × 100`, bukan fee aktual yang terkumpul. Perhitungan ini dapat meleset untuk pool dengan hook atau dynamic fee. Token untuk Auto Trading tetap harus tersedia pada feed analisis dan lolos guardrail Nara. Hasil pemindai mencakup semua network yang terdata, tetapi posisi simulasi hanya dapat dibuka untuk chain yang didukung feed dan guardrail; chain lain tetap tampil di pemindai tanpa pemetaan diam-diam. Pool ID v4 disimpan sebagai referensi. Posisi tetap **simulasi**, bukan transaksi atau penyediaan likuiditas on-chain.
+
+Frontend: modal `#naraModal`, `scanNaraV4Pools()`. Backend: `runUniswapV4AprScan()`, `POST /api/agent/auto-trading`.
 
 ### 3. Terminal Open LP penuh + auto-pilot
 Terminal lengkap di tab Desk (range, Side, Quote, Min/Max, SL/TP, strategi,
@@ -398,8 +406,9 @@ gaya scene di `styles.css` (`.dock-scene`, `.char`, `.fox`, keyframes
 
 ### 13. Nara — Auto Trading LP
 Toggle (default NONAKTIF), min score, amount, max positions, chain filter,
-range preset, verdict filter, “Jalankan sekarang” memindai Top 10 agent
-API; batas modal 5.000 USDC; tidak membuka ulang token berposisi.
+range preset, verdict filter, sumber kandidat (DEX Screener atau Uniswap v4
+estimasi APR multi-network), APR minimum; “Jalankan sekarang” memindai sumber terpilih;
+batas modal 5.000 USDC; tidak membuka ulang token berposisi.
 Guardrail: batas kerugian harian (default 150, 0 = nonaktif, dari ledger
 hari ini via `todayPnl()`), likuiditas minimum (default 50.000), minimum
 holder (default 500; data holder tidak tersedia = **gagal**, bukan lolos).

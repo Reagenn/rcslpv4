@@ -62,6 +62,9 @@ const BASE_MAINNET_TOKENS = [
   { symbol: "WETH", name: "Wrapped Ether", address: "0x4200000000000000000000000000000000000006", decimals: 18 },
   { symbol: "USDC", name: "USD Coin (Base)", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
 ];
+const BASE_MAINNET_TOKEN_LIST_URL = "https://raw.githubusercontent.com/Uniswap/default-token-list/main/src/tokens/base.json";
+let listedBaseMainnetTokens = [];
+let baseMainnetTokenListStatus = "Memuat daftar token Base dari Uniswap…";
 let importedBaseMainnetTokens = [];
 let tokenPickerTarget = "A";
 let baseMainnetPoolContext = null;
@@ -73,7 +76,7 @@ function defaultSettings() {
   // Disamakan dengan default hosted: Nara 70/250/3/wide/consider,
   // Byte TP +22% / SL 28%, Kopi 250/3/wide.
   return {
-    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500 },
+    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500, source: "DEX", minApr: 20 },
     tpSl: { armed: false, defaultTpPct: 22, defaultSlPct: 28 },
     copyTrading: { enabled: false, leaderId: null, amountPerCopy: 250, maxPositions: 3, rangePreset: "wide", dailyLossLimit: 150 },
   };
@@ -282,6 +285,7 @@ async function api(pathname, options) {
     const err = new Error(data.error || "HTTP " + res.status);
     err.status = res.status;
     err.friendly = data.error || "Terjadi kesalahan. Coba lagi nanti.";
+    err.details = data;
     throw err;
   }
   return data;
@@ -483,12 +487,50 @@ function abiAddress(data) {
   return "0x" + abiWord(data, 0).slice(-40);
 }
 function allBaseMainnetTokens() {
-  return BASE_MAINNET_TOKENS.concat(importedBaseMainnetTokens);
+  const seen = new Set();
+  return BASE_MAINNET_TOKENS.concat(listedBaseMainnetTokens, importedBaseMainnetTokens).filter((token) => {
+    const address = String(token.address || "");
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address) || seen.has(address.toLowerCase())) return false;
+    seen.add(address.toLowerCase());
+    return true;
+  });
+}
+async function loadBaseMainnetTokenList() {
+  const status = $("tokenPickerListStatus");
+  if (status) status.textContent = baseMainnetTokenListStatus;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(BASE_MAINNET_TOKEN_LIST_URL, { signal: controller.signal, cache: "no-cache" });
+    if (!response.ok) throw new Error("Daftar token tidak tersedia (HTTP " + response.status + ").");
+    const entries = await response.json();
+    if (!Array.isArray(entries)) throw new Error("Format daftar token tidak valid.");
+    listedBaseMainnetTokens = entries.filter((token) => token && token.chainId === 8453 &&
+      /^0x[a-fA-F0-9]{40}$/.test(String(token.address || "")) &&
+      typeof token.symbol === "string" && token.symbol.length > 0 && token.symbol.length <= 32 &&
+      typeof token.name === "string" && token.name.length > 0 && token.name.length <= 80 &&
+      Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 36)
+      .map((token) => ({ symbol: token.symbol, name: token.name, address: token.address, decimals: token.decimals }));
+    baseMainnetTokenListStatus = listedBaseMainnetTokens.length + " token Base dari Uniswap Default Token List. Token list bukan verifikasi keamanan atau likuiditas.";
+  } catch (error) {
+    baseMainnetTokenListStatus = "Daftar online gagal dimuat; token bawaan dan token yang di-import tetap tersedia. " + (error.name === "AbortError" ? "Koneksi timeout." : error.message);
+  } finally {
+    window.clearTimeout(timeout);
+    const previousA = $("poolTokenA").value;
+    const previousB = $("poolTokenB").value;
+    populateBaseMainnetTokenSelectors();
+    if (tokenByAddress(previousA)) $("poolTokenA").value = previousA;
+    if (tokenByAddress(previousB)) $("poolTokenB").value = previousB;
+    renderPoolTokenDetails();
+    renderTokenPicker();
+  }
 }
 function tokenByAddress(address) {
   return allBaseMainnetTokens().find((token) => token.address.toLowerCase() === String(address || "").toLowerCase());
 }
 function populateBaseMainnetTokenSelectors() {
+  const previousA = $("poolTokenA").value;
+  const previousB = $("poolTokenB").value;
   [$("poolTokenA"), $("poolTokenB")].forEach((select) => {
     select.replaceChildren();
     allBaseMainnetTokens().forEach((token) => {
@@ -498,8 +540,8 @@ function populateBaseMainnetTokenSelectors() {
       select.appendChild(option);
     });
   });
-  $("poolTokenA").value = BASE_MAINNET_TOKENS[0].address;
-  $("poolTokenB").value = BASE_MAINNET_TOKENS[1].address;
+  $("poolTokenA").value = tokenByAddress(previousA) ? previousA : BASE_MAINNET_TOKENS[0].address;
+  $("poolTokenB").value = tokenByAddress(previousB) ? previousB : BASE_MAINNET_TOKENS[1].address;
   renderPoolTokenDetails();
 }
 function renderPoolTokenDetails() {
@@ -527,7 +569,9 @@ function renderTokenPicker() {
     [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search)));
   const quick = $("tokenPickerQuick");
   quick.replaceChildren();
-  BASE_MAINNET_TOKENS.filter((token) => !search || [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search))).forEach((token) => {
+  const preferredSymbols = ["WETH", "USDC", "AERO", "USDbC", "cbBTC", "DAI", "DEGEN", "TOSHI"];
+  const quickTokens = preferredSymbols.map((symbol) => allBaseMainnetTokens().find((token) => token.symbol.toLowerCase() === symbol.toLowerCase())).filter(Boolean);
+  quickTokens.filter((token) => !search || [token.symbol, token.name, token.address].some((value) => String(value).toLowerCase().includes(search))).forEach((token) => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = token.symbol;
@@ -535,6 +579,8 @@ function renderTokenPicker() {
     button.addEventListener("click", () => chooseTokenFromPicker(token.address));
     quick.appendChild(button);
   });
+  const status = $("tokenPickerListStatus");
+  if (status) status.textContent = baseMainnetTokenListStatus + " · " + allBaseMainnetTokens().length + " token tersedia.";
   const list = $("tokenPickerList");
   list.replaceChildren();
   matches.forEach((token) => {
@@ -1063,6 +1109,7 @@ function initBrowserWallet() {
   $("poolQuoteAmount").addEventListener("input", invalidateSwapQuote);
   $("poolQuoteDirection").addEventListener("change", invalidateSwapQuote);
   $("swapSlippage").addEventListener("change", invalidateSwapQuote);
+  loadBaseMainnetTokenList();
 }
 
 function renderTransactions() {
@@ -2223,6 +2270,8 @@ function fillNaraForm() {
   $("naraDailyLoss").value = at.dailyLossLimit;
   $("naraMinLiq").value = at.minLiquidity;
   $("naraMinHolder").value = at.minHolder;
+  $("naraSource").value = at.source || "DEX";
+  $("naraMinApr").value = at.minApr == null ? 20 : at.minApr;
   renderAgentLogs("naraLogs", "Nara");
 }
 function readNaraForm() {
@@ -2237,6 +2286,8 @@ function readNaraForm() {
   at.dailyLossLimit = Number($("naraDailyLoss").value) || 0;
   at.minLiquidity = Number($("naraMinLiq").value) || 0;
   at.minHolder = Number($("naraMinHolder").value) || 0;
+  at.source = $("naraSource").value;
+  at.minApr = Number($("naraMinApr").value) || 0;
 }
 function fillByteForm() {
   const tp = settings.tpSl;
@@ -3228,6 +3279,29 @@ async function runKopi() {
     $("kopiRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
   }
 }
+async function scanNaraV4Pools() {
+  const box = $("naraV4Pools");
+  box.textContent = "Memuat pool Uniswap v4 multi-network dan menghitung estimasi APR…";
+  try {
+    const out = await api("/api/uniswap-v4/pools");
+    const rows = (out.pools || []).slice(0, 10);
+    if (!rows.length) {
+      box.textContent = "Belum ada pool yang memenuhi batas umur, TVL, volume, dan fee tier yang dapat dibaca.";
+      return;
+    }
+    box.innerHTML = '<p><strong>Pool Uniswap v4 multi-network (estimasi APR):</strong></p><ul>' + rows.map((p) =>
+      "<li>" + esc(p.chainName) + " · " + esc(p.token0.symbol) + "/" + esc(p.token1.symbol) + " — " + Number(p.apr).toFixed(2) + "% APR · fee tier " + Number(p.feePercent).toFixed(4) + "% · TVL " + fmtMoney(p.tvlUsd) + " · estimasi fee 24j " + fmtMoney(p.estimatedFees24hUsd) + "</li>"
+    ).join("") + "</ul><p class=\"muted\">" + esc(out.aprFormula) + "</p>" +
+      (out.failedNetworks && out.failedNetworks.length ? '<p class="muted">Sebagian network gagal dimuat: ' + esc(out.failedNetworks.map((n) => n.chain).join(", ")) + ".</p>" : "");
+  } catch (e) {
+    box.textContent = e.status === 404 && e.message === "Endpoint tidak ditemukan."
+      ? "Rute APR v4 belum tersedia pada backend yang berjalan. Hentikan server lama lalu jalankan ulang dengan `npm start`."
+      : (e.details && e.details.failedNetworks && e.details.failedNetworks.length
+        ? (e.friendly || e.message) + " Network gagal: " + e.details.failedNetworks.map((n) => n.chain).join(", ") + "."
+        : e.friendly || e.message);
+  }
+}
+
 async function runNara() {
   readNaraForm();
   try {
@@ -3236,12 +3310,12 @@ async function runNara() {
     $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
     return;
   }
-  $("naraRunOut").innerHTML = '<p class="muted">Nara memindai Top 10 agent API…</p>';
+  $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara memindai pool Uniswap v4 multi-network dengan APR minimum…" : "Nara memindai Top 10 agent API…") + "</p>";
   try {
     const r = await postJson("/api/agent/auto-trading", { action: "run" });
     const lines = [];
     if (r.stoppedByDailyLoss) lines.push("Berhenti: batas kerugian harian tercapai (PnL hari ini " + fmtMoney(r.todayPnl) + ").");
-    (r.opened || []).forEach((o) => lines.push("Dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price)));
+    (r.opened || []).forEach((o) => lines.push("Dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price) + (o.apr == null ? "" : " · APR v4 " + Number(o.apr).toFixed(2) + "% historis")));
     (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(s.symbol) + " — " + esc(s.reason)));
     $("naraRunOut").innerHTML = "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>";
     await loadState();
@@ -3751,6 +3825,7 @@ function init() {
     }
   });
   $("naraRunBtn").addEventListener("click", runNara);
+  $("naraV4ScanBtn").addEventListener("click", scanNaraV4Pools);
   $("byteSaveBtn").addEventListener("click", async () => {
     settings.tpSl.armed = $("byteArmed").checked;
     settings.tpSl.defaultTpPct = Number($("byteTp").value) || 0;
