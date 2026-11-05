@@ -2511,8 +2511,8 @@ function renderDiscover() {
         '<td data-label="MCap">' +
         (c.market_cap_usd ? fmtCompact(c.market_cap_usd) : "—") +
         "</td>" +
-        '<td data-label="Holders">' +
-        fmtCount(c.holders_count) +
+        '<td data-label="Holders" title="' + esc(c.holders_count_source || "Sumber holder tidak tersedia") + '">' +
+        (c.holders_count == null ? "Tidak tersedia" : (c.holders_count_is_lower_bound ? "≥" : "") + fmtCount(c.holders_count)) +
         "</td>" +
         '<td data-label="Vol 5M">' +
         fmtCompact(c.volume_m5) +
@@ -2616,7 +2616,8 @@ function candidateDetailHtml(c) {
     (c.safety_score == null ? "—" : c.safety_score) +
     "<br>" +
     "Holders: " +
-    (aa.holder_count == null ? "tidak tersedia" : fmtCount(aa.holder_count)) +
+    (aa.holder_count == null ? "tidak tersedia dari sumber publik" : (aa.holder_count_is_lower_bound ? "≥" : "") + fmtCount(aa.holder_count)) +
+    (aa.holder_count_source ? " · sumber: " + esc(aa.holder_count_source) : "") +
     (aa.top_holders_percent != null ? " · 10 holder teratas: " + aa.top_holders_percent + "%" : "") +
     " · Likuiditas: " +
     fmtMoney(c.liquidity_usd) +
@@ -3281,21 +3282,35 @@ async function runKopi() {
 }
 async function scanNaraV4Pools() {
   const box = $("naraV4Pools");
-  box.textContent = "Memuat pool Uniswap v4 multi-network dan menghitung estimasi APR…";
+  box.textContent = "Memuat APR pool Uniswap v4 multi-network dan Meteora DLMM Solana…";
   try {
-    const out = await api("/api/uniswap-v4/pools");
+    const out = await api("/api/pools/apr");
     const rows = (out.pools || []).slice(0, 10);
     if (!rows.length) {
-      box.textContent = "Belum ada pool yang memenuhi batas umur, TVL, volume, dan fee tier yang dapat dibaca.";
+      box.textContent = "Belum ada pool yang memenuhi batas umur, TVL, volume, dan fee yang valid.";
       return;
     }
-    box.innerHTML = '<p><strong>Pool Uniswap v4 multi-network (estimasi APR):</strong></p><ul>' + rows.map((p) =>
-      "<li>" + esc(p.chainName) + " · " + esc(p.token0.symbol) + "/" + esc(p.token1.symbol) + " — " + Number(p.apr).toFixed(2) + "% APR · fee tier " + Number(p.feePercent).toFixed(4) + "% · TVL " + fmtMoney(p.tvlUsd) + " · estimasi fee 24j " + fmtMoney(p.estimatedFees24hUsd) + "</li>"
-    ).join("") + "</ul><p class=\"muted\">" + esc(out.aprFormula) + "</p>" +
+    box.innerHTML = '<p><strong>APR pool multi-network (preview):</strong></p><ul>' + rows.map((p) => {
+      const feeInfo = p.protocol === "Meteora DLMM"
+        ? "fee 24j dilaporkan " + fmtMoney(p.fees24hUsd)
+        : "fee tier " + Number(p.feePercent).toFixed(4) + "% · estimasi fee 24j " + fmtMoney(p.estimatedFees24hUsd);
+      return "<li>" + esc(p.chainName) + " · " + esc(p.protocol) + " · " + esc(p.token0.symbol) + "/" + esc(p.token1.symbol) + " — " + Number(p.apr).toFixed(2) + "% APR · TVL " + fmtMoney(p.tvlUsd) + " · " + feeInfo + "</li>";
+    }).join("") + "</ul><p class=\"muted\">" + esc(out.aprFormula) + "</p>" +
+      '<p class="muted">Preview tidak langsung membuka posisi. Jalankan tombol di bawah untuk membuat posisi simulasi setelah Nara aktif dan semua guardrail lolos.</p>' +
+      '<button id="naraAprTradeBtn" class="primary" type="button">Jalankan simulasi dari pool APR</button>' +
       (out.failedNetworks && out.failedNetworks.length ? '<p class="muted">Sebagian network gagal dimuat: ' + esc(out.failedNetworks.map((n) => n.chain).join(", ")) + ".</p>" : "");
+    $("naraAprTradeBtn").addEventListener("click", () => {
+      $("naraSource").value = "UNISWAP_V4";
+      readNaraForm();
+      if (!settings.autoTrading.enabled) {
+        $("naraRunOut").innerHTML = '<p class="muted">Aktifkan toggle Nara terlebih dahulu. Belum ada posisi yang dibuka.</p>';
+        return;
+      }
+      if (window.confirm("Jalankan Auto Trading pool APR? Aplikasi hanya membuat posisi SIMULASI, bukan transaksi on-chain.")) runNara();
+    });
   } catch (e) {
     box.textContent = e.status === 404 && e.message === "Endpoint tidak ditemukan."
-      ? "Rute APR v4 belum tersedia pada backend yang berjalan. Hentikan server lama lalu jalankan ulang dengan `npm start`."
+      ? "Rute APR pool belum tersedia pada backend yang berjalan. Hentikan server lama lalu jalankan ulang dengan `npm start`."
       : (e.details && e.details.failedNetworks && e.details.failedNetworks.length
         ? (e.friendly || e.message) + " Network gagal: " + e.details.failedNetworks.map((n) => n.chain).join(", ") + "."
         : e.friendly || e.message);
@@ -3310,14 +3325,16 @@ async function runNara() {
     $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
     return;
   }
-  $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara memindai pool Uniswap v4 multi-network dengan APR minimum…" : "Nara memindai Top 10 agent API…") + "</p>";
+  $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara mencocokkan pool APR multi-network dengan kandidat yang lolos guardrail…" : "Nara memindai Top 10 agent API…") + "</p>";
   try {
     const r = await postJson("/api/agent/auto-trading", { action: "run" });
     const lines = [];
     if (r.stoppedByDailyLoss) lines.push("Berhenti: batas kerugian harian tercapai (PnL hari ini " + fmtMoney(r.todayPnl) + ").");
-    (r.opened || []).forEach((o) => lines.push("Dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price) + (o.apr == null ? "" : " · APR v4 " + Number(o.apr).toFixed(2) + "% historis")));
+    (r.opened || []).forEach((o) => lines.push("Posisi simulasi dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price) + (o.apr == null ? "" : " · " + esc(o.protocol || "Pool") + " APR " + Number(o.apr).toFixed(2) + "%")));
     (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(s.symbol) + " — " + esc(s.reason)));
-    $("naraRunOut").innerHTML = "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>";
+    $("naraRunOut").innerHTML = lines.length
+      ? "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>"
+      : '<p class="muted">Tidak ada posisi simulasi dibuka. Periksa log Nara dan filter guardrail.</p>';
     await loadState();
     renderAgentLogs("naraLogs", "Nara");
   } catch (e) {

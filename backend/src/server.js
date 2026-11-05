@@ -14,7 +14,13 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const crypto = require("crypto");
-const { UNISWAP_V4_NETWORKS, normalizeGeckoPools } = require("./uniswap-v4");
+const {
+  UNISWAP_V4_NETWORKS,
+  normalizeGeckoPools,
+  normalizeMeteoraPools,
+  tokenAddressKey,
+  isPoolTokenAddress,
+} = require("./uniswap-v4");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -59,9 +65,9 @@ const DEX_CHAIN_MAP = {
   arc: "ARC",
 };
 // GoPlus chain ids (hanya chain yang didukung GoPlus; lainnya -> SECURITY UNAVAILABLE)
-const GOPLUS_CHAIN_ID = { SOL: 101, BASE: 8453, BSC: 56, ETH: 1 };
+const GOPLUS_CHAIN_ID = { SOL: 101, BASE: 8453, BSC: 56, ETH: 1, ROBINHOOD: 4663 };
 const METEORA_DATAPI = "https://dlmm.datapi.meteora.ag";
-let uniswapV4AprCache = { at: 0, data: null };
+let poolAprCache = { at: 0, data: null };
 
 function uid(prefix) {
   return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
@@ -691,39 +697,51 @@ function marketScore(pair) {
   return Math.round((liqScore + volScore) / 2);
 }
 
-async function runUniswapV4AprScan() {
+async function runPoolAprScan() {
   const now = Date.now();
-  if (uniswapV4AprCache.data && now - uniswapV4AprCache.at < 5 * 60 * 1000) return uniswapV4AprCache.data;
+  if (poolAprCache.data && now - poolAprCache.at < 5 * 60 * 1000) return poolAprCache.data;
 
-  const results = await Promise.allSettled(UNISWAP_V4_NETWORKS.map(async (network) => {
-    const url = "https://api.geckoterminal.com/api/v2/networks/" + network.networkId +
-      "/dexes/" + network.dexId + "/pools?include=base_token%2Cquote_token";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: { accept: "application/json;version=20230302" },
-      });
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      const payload = await response.json();
-      return { network, pools: normalizeGeckoPools(network, payload, now) };
-    } finally {
-      clearTimeout(timeout);
-    }
+  const requests = UNISWAP_V4_NETWORKS.map((network) => ({
+    network,
+    fetchPools: async () => {
+      const url = "https://api.geckoterminal.com/api/v2/networks/" + network.networkId +
+        "/dexes/" + network.dexId + "/pools?include=base_token%2Cquote_token";
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { accept: "application/json;version=20230302" },
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return normalizeGeckoPools(network, await response.json(), now);
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
   }));
+  requests.push({
+    network: { chainName: "Solana (Meteora DLMM)" },
+    fetchPools: async () => normalizeMeteoraPools(
+      await fetchJson(METEORA_DATAPI + "/pools?page_size=100&sort_by=tvl:desc", 15000), now
+    ),
+  });
 
+  const results = await Promise.allSettled(requests.map(async (request) => ({
+    network: request.network,
+    pools: await request.fetchPools(),
+  })));
   const successful = [];
   const failedNetworks = [];
   results.forEach((result, index) => {
     if (result.status === "fulfilled") successful.push(result.value);
     else failedNetworks.push({
-      chain: UNISWAP_V4_NETWORKS[index].chainName,
+      chain: requests[index].network.chainName,
       error: result.reason && result.reason.name === "AbortError" ? "timeout" : (result.reason && result.reason.message) || "request gagal",
     });
   });
   if (!successful.length) {
-    const error = new Error("Gagal mengambil data pool Uniswap v4 dari GeckoTerminal untuk semua network.");
+    const error = new Error("Gagal mengambil data APR pool dari semua sumber network.");
     error.statusCode = 502;
     error.failedNetworks = failedNetworks;
     throw error;
@@ -734,13 +752,13 @@ async function runUniswapV4AprScan() {
     .slice(0, 100);
   const data = {
     fetchedAt: new Date().toISOString(),
-    source: "GeckoTerminal public REST API",
+    source: "GeckoTerminal + Meteora DLMM Data API",
     networksScanned: successful.map((result) => result.network.chainName),
     failedNetworks,
-    aprFormula: "Estimasi APR = (volume 24 jam × fee tier pool) / TVL × 365; bukan fee realisasi atau proyeksi hasil.",
+    aprFormula: "Uniswap v4: (volume 24 jam × fee tier) / TVL × 365; Solana/Meteora DLMM: fee 24 jam dari API / TVL × 365. Keduanya indikatif, bukan jaminan hasil.",
     pools,
   };
-  uniswapV4AprCache = { at: now, data };
+  poolAprCache = { at: now, data };
   return data;
 }
 
@@ -749,107 +767,141 @@ async function runCandidateAgent() {
   if (candidatesCache.data && candidatesCache.userId === activeUserId && now - candidatesCache.at < 5 * 60 * 1000) {
     return candidatesCache.data;
   }
-  // Feed kandidat menyamakan catatan sumber hosted: DEX Screener
-  // token-boosts (token yang sedang di-boost) + token-pairs untuk metriknya.
-  // Fallback ke token-profiles hanya bila boosts kosong/gagal.
-  let feed = [];
-  try {
-    const res = await fetchJson("https://api.dexscreener.com/token-boosts/latest/v1", 12000);
-    if (Array.isArray(res)) feed = res;
-  } catch (_) {
-    feed = [];
+  // Gabungkan beberapa feed publik agar kandidat tidak bergantung pada boost
+  // terbaru saja. Tambahkan token Robinhood dari pool v4 yang sudah terindeks,
+  // lalu prioritaskan chain tersebut dengan batas total kandidat yang wajar.
+  const feedUrls = [
+    "https://api.dexscreener.com/token-boosts/latest/v1",
+    "https://api.dexscreener.com/token-boosts/top/v1",
+    "https://api.dexscreener.com/token-profiles/latest/v1",
+    "https://api.dexscreener.com/token-profiles/recent-updates/v1",
+  ];
+  const [feedResults, robinhoodPools] = await Promise.all([
+    Promise.allSettled(feedUrls.map((url) => fetchJson(url, 12000))),
+    runPoolAprScan().then((result) => result.pools.filter((pool) => pool.chain === "ROBINHOOD")).catch(() => []),
+  ]);
+  const feed = feedResults.flatMap((result) => result.status === "fulfilled" && Array.isArray(result.value) ? result.value : []);
+  const candidatesByKey = new Map();
+  const addCandidate = (chain, address) => {
+    if (!CHAINS.includes(chain) || !isPoolTokenAddress(chain, address)) return;
+    const key = tokenAddressKey(chain, address);
+    if (!candidatesByKey.has(key)) candidatesByKey.set(key, { address, chain });
+  };
+  for (const p of feed) addCandidate(DEX_CHAIN_MAP[(p.chainId || "").toLowerCase()], p.tokenAddress);
+  for (const pool of robinhoodPools) {
+    addCandidate(pool.chain, pool.token0 && pool.token0.id);
+    addCandidate(pool.chain, pool.token1 && pool.token1.id);
   }
-  if (!feed.length) {
-    try {
-      const res = await fetchJson("https://api.dexscreener.com/token-profiles/latest/v1", 12000);
-      if (Array.isArray(res)) feed = res;
-    } catch (_) {
-      feed = [];
-    }
-  }
-  const seen = new Set();
-  const picked = [];
-  for (const p of feed) {
-    const chain = DEX_CHAIN_MAP[(p.chainId || "").toLowerCase()];
-    if (!chain || !p.tokenAddress || seen.has(p.tokenAddress.toLowerCase())) continue;
-    seen.add(p.tokenAddress.toLowerCase());
-    picked.push({ address: p.tokenAddress, chain });
-    // Hosted teramati mengembalikan 10 recommendations + 10 pending = 20
-    // kandidat; feed dibatasi 20 token agar strukturnya sama.
-    if (picked.length >= 20) break;
+  const allPicked = [...candidatesByKey.values()];
+  const robinhoodPicked = allPicked.filter((candidate) => candidate.chain === "ROBINHOOD").slice(0, 40);
+  const otherPicked = allPicked.filter((candidate) => candidate.chain !== "ROBINHOOD");
+  const picked = robinhoodPicked.concat(otherPicked.slice(0, 60 - robinhoodPicked.length));
+
+  // DexScreener menerima beberapa alamat token sekaligus (maks. 30), jadi
+  // ambil data pair per chain secara batch alih-alih satu request per token.
+  const grouped = new Map();
+  for (const candidate of picked) {
+    if (!grouped.has(candidate.chain)) grouped.set(candidate.chain, []);
+    grouped.get(candidate.chain).push(candidate);
   }
   const enriched = [];
-  for (const c of picked) {
-    try {
-      const data = await fetchJson("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(c.address), 10000);
-      const pair = pickBestPair(data.pairs);
-      if (!pair) continue;
-      enriched.push({
-        ...c,
-        pair,
-        poolCount: (data.pairs || []).length,
-        name: pair.baseToken?.name || "Unknown",
-        symbol: pair.baseToken?.symbol || "???",
+  const batches = [...grouped.entries()].flatMap(([chain, list]) =>
+    Array.from({ length: Math.ceil(list.length / 30) }, (_, index) => ({
+      chain,
+      candidates: list.slice(index * 30, (index + 1) * 30),
+    })),
+  );
+  const pairResults = await Promise.allSettled(batches.map(async (batch) => {
+    const addresses = batch.candidates.map((candidate) => candidate.address).join(",");
+    const data = await fetchJson("https://api.dexscreener.com/latest/dex/tokens/" + addresses, 12000);
+    return { ...batch, pairs: data.pairs || [] };
+  }));
+  for (const result of pairResults) {
+    if (result.status !== "fulfilled") continue;
+    const { chain, candidates, pairs } = result.value;
+    for (const candidate of candidates) {
+      const candidateKey = tokenAddressKey(chain, candidate.address);
+      const tokenPairs = pairs.filter((pair) => {
+        if (chainFromPair(pair) !== chain) return false;
+        return tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ||
+          tokenAddressKey(chain, pair.quoteToken && pair.quoteToken.address) === candidateKey;
       });
-    } catch (_) {
-      /* skip unreachable candidate */
+      const pair = pickBestPair(tokenPairs);
+      if (!pair) continue;
+      const token = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ? pair.baseToken : pair.quoteToken;
+      enriched.push({
+        ...candidate,
+        pair,
+        poolCount: tokenPairs.length,
+        name: token && token.name || "Unknown",
+        symbol: token && token.symbol || "???",
+      });
     }
   }
   // GoPlus security per chain
   const byChain = {};
   for (const e of enriched) (byChain[e.chain] = byChain[e.chain] || []).push(e);
   const goplusByAddr = {};
-  for (const [chain, list] of Object.entries(byChain)) {
+  await Promise.all(Object.entries(byChain).map(async ([chain, list]) => {
     const gid = GOPLUS_CHAIN_ID[chain];
     if (chain === "SOL") {
       // GoPlus token_security umum TIDAK mendukung Solana; pakai endpoint
-      // khusus Solana /v1/solana/token_security dan ambil PER ALAMAT
-      // (mode batch membuang sebagian besar mint secara diam-diam).
-      try {
-        const results = await Promise.all(
-          list.map(async (e) => {
-            try {
-              const res = await fetchJson("https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=" + encodeURIComponent(e.address), 12000);
-              return [e.address, Object.values(res.result || {})[0] || null];
-            } catch (_) {
-              return [e.address, null];
-            }
-          }),
-        );
-        for (const [addr, v] of results) {
-          if (!v) continue;
-          const hasFee = v.transfer_fee && Object.keys(v.transfer_fee).length > 0;
-          goplusByAddr[addr] = {
-            is_honeypot: "0",
-            is_mintable: v.mintable?.status === "1" ? "1" : "0",
-            is_blacklisted: v.freezable?.status === "1" ? "1" : "0",
-            can_take_back_ownership: "0",
-            buy_tax: hasFee ? "10" : "0",
-            sell_tax: hasFee ? "10" : "0",
-            cannot_sell_all: v.non_transferable === "1" ? "1" : "0",
-            is_open_source: "1",
-            // Endpoint Solana GoPlus TERNYATA menyediakan holder_count +
-            // holders[] (terverifikasi live) — hosted menampilkan holder
-            // nyata untuk token Solana, jadi data ini sekarang dipakai,
-            // tidak lagi dianggap tidak tersedia.
-            holder_count: v.holder_count != null ? Number(v.holder_count) || 0 : 0,
-            holders: Array.isArray(v.holders) ? v.holders : [],
-            _hasHolderData: v.holder_count != null,
-          };
-        }
-      } catch (_) {
-        /* GoPlus Solana unavailable -> SECURITY UNAVAILABLE */
+      // khusus Solana /v1/solana/token_security dan ambil PER ALAMAT.
+      const results = await Promise.allSettled(list.map(async (entry) => {
+        const res = await fetchJson("https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=" + encodeURIComponent(entry.address), 12000);
+        return { entry, security: Object.values(res.result || {})[0] || null };
+      }));
+      for (const result of results) {
+        if (result.status !== "fulfilled" || !result.value.security) continue;
+        const { entry, security: v } = result.value;
+        const hasFee = v.transfer_fee && Object.keys(v.transfer_fee).length > 0;
+        goplusByAddr[tokenAddressKey("SOL", entry.address)] = {
+          is_honeypot: "0",
+          is_mintable: v.mintable?.status === "1" ? "1" : "0",
+          is_blacklisted: v.freezable?.status === "1" ? "1" : "0",
+          can_take_back_ownership: "0",
+          buy_tax: hasFee ? "10" : "0",
+          sell_tax: hasFee ? "10" : "0",
+          cannot_sell_all: v.non_transferable === "1" ? "1" : "0",
+          is_open_source: "1",
+          holder_count: v.holder_count != null && Number.isFinite(Number(v.holder_count)) ? Number(v.holder_count) : null,
+          holders: Array.isArray(v.holders) ? v.holders : [],
+        };
       }
-      continue;
+      return;
     }
-    if (!gid) continue;
+    if (!gid) return;
     try {
-      const addrs = list.map((e) => e.address).join(",");
+      const addrs = list.map((entry) => entry.address).join(",");
       const res = await fetchJson("https://api.gopluslabs.io/api/v1/token_security/" + gid + "?contract_addresses=" + encodeURIComponent(addrs), 12000);
-      Object.assign(goplusByAddr, res.result || {});
+      const resultByAddress = new Map(Object.entries(res.result || {}).map(([address, value]) => [address.toLowerCase(), value]));
+      for (const entry of list) {
+        const security = resultByAddress.get(entry.address.toLowerCase());
+        if (security) goplusByAddr[tokenAddressKey(chain, entry.address)] = security;
+      }
     } catch (_) {
       /* GoPlus unavailable for this chain -> SECURITY UNAVAILABLE */
     }
+  }));
+  // Retry GoPlus per token untuk Robinhood bila batch tidak mengembalikan angka
+  // holder; sebagian respons batch melewatkan item tanpa menjelaskan sebabnya.
+  const robinhoodMissingHolders = enriched.filter((entry) => {
+    if (entry.chain !== "ROBINHOOD") return false;
+    const security = goplusByAddr[tokenAddressKey(entry.chain, entry.address)];
+    return !security || security.holder_count == null || !Number.isFinite(Number(security.holder_count));
+  }).slice(0, 12);
+  const holderRetries = await Promise.allSettled(robinhoodMissingHolders.map(async (entry) => {
+    const url = "https://api.gopluslabs.io/api/v1/token_security/4663?contract_addresses=" + encodeURIComponent(entry.address);
+    const response = await fetchJson(url, 8000);
+    const result = response.result || {};
+    const security = result[entry.address] || result[entry.address.toLowerCase()] || Object.values(result)[0];
+    return { entry, security };
+  }));
+  for (const result of holderRetries) {
+    if (result.status !== "fulfilled" || !result.value.security) continue;
+    const { entry, security } = result.value;
+    const key = tokenAddressKey(entry.chain, entry.address);
+    goplusByAddr[key] = { ...(goplusByAddr[key] || {}), ...security };
   }
   // Fee/TVL jendela dari pool Meteora DLMM — hanya kandidat Solana.
   const feeTvlByAddr = {};
@@ -865,15 +917,14 @@ async function runCandidateAgent() {
   // field flat snake_case + agent_analysis{} + due_diligence{} + rationale[].
   const analyzedAt = new Date().toISOString();
   const scored = enriched.map((e) => {
-    const g = goplusByAddr[e.address.toLowerCase()] || goplusByAddr[e.address] || null;
+    const g = goplusByAddr[tokenAddressKey(e.chain, e.address)] || null;
     const security = goplusSecurityScore(g);
-    const hasHolderData =
-      g ?
-        g._hasHolderData !== undefined ?
-          g._hasHolderData
-        : g.holder_count != null
-      : false;
-    const holderCount = hasHolderData ? Number(g.holder_count) || 0 : null;
+    const reportedHolderCount = g && (g.holder_count ?? g.holders_count);
+    const exactHolderCount = reportedHolderCount != null && Number.isFinite(Number(reportedHolderCount)) && Number(reportedHolderCount) >= 0;
+    const holderListCount = g && Array.isArray(g.holders) ? g.holders.length : 0;
+    const holderCountIsLowerBound = !exactHolderCount && holderListCount > 0;
+    const hasHolderData = exactHolderCount || holderCountIsLowerBound;
+    const holderCount = exactHolderCount ? Number(reportedHolderCount) : holderCountIsLowerBound ? holderListCount : null;
     const topPct = g ? topHoldersPercent(g) : null;
     const organic = g ? organicProxyScore(holderCount || 0, e.pair, hasHolderData, topPct) : null;
     const market = marketScore(e.pair);
@@ -890,7 +941,7 @@ async function runCandidateAgent() {
     }
     const status =
       !g ? "unavailable"
-      : hasHolderData ? "complete"
+      : exactHolderCount ? "complete"
       : "partial";
     const confidence = status === "complete" ? "high" : "low";
     const findings =
@@ -942,6 +993,7 @@ async function runCandidateAgent() {
     const limitations = [
       !g && GOPLUS_CHAIN_ID[e.chain] ? "GoPlus belum memiliki data keamanan untuk alamat ini." : null,
       !g && !GOPLUS_CHAIN_ID[e.chain] ? "GoPlus belum dipakai untuk profil chain " + e.chain + "; skor hanya memakai data pasar DEX Screener." : null,
+      holderCountIsLowerBound ? "GoPlus mengembalikan daftar holder tanpa total; angka holder yang ditampilkan adalah batas minimum dari jumlah baris yang tersedia." : null,
       g && !hasHolderData ? "Data holder tidak tersedia dari GoPlus untuk alamat ini; proxy organik memakai aktivitas transaksi." : null,
       "Bundling, cabal, same-block buyers, dan riwayat sosial tidak tercakup API publik — tetap periksa manual lewat due diligence.",
       "Data Smart LP tidak tersedia dari sumber publik mana pun dan tidak pernah diisi perkiraan.",
@@ -970,6 +1022,8 @@ async function runCandidateAgent() {
         analyzed_at: analyzedAt,
         confidence,
         holder_count: holderCount,
+        holder_count_is_lower_bound: holderCountIsLowerBound,
+        holder_count_source: hasHolderData ? "GoPlus" : null,
         limitations,
         organic_proxy_score: organic,
         positives,
@@ -991,6 +1045,8 @@ async function runCandidateAgent() {
       fee_tvl_5m: ft.m5,
       fee_tvl_6h: ft.h6,
       holders_count: holderCount,
+      holders_count_is_lower_bound: holderCountIsLowerBound,
+      holders_count_source: hasHolderData ? "GoPlus" : null,
       liquidity_usd: liquidity,
       market_cap_usd: e.pair.marketCap || e.pair.fdv || null,
       market_score: market,
@@ -1026,7 +1082,7 @@ async function runCandidateAgent() {
     recommendations: ranked,
     pending_candidates: pending,
     source_note:
-      "Kandidat dan metrik pasar berasal dari DEX Screener (token-boosts + token-pairs: volume dan perubahan harga 5m/1j/6j/24j, jumlah pool, market cap, dan usia pool). Fee/TVL per jendela waktu berasal dari pool Meteora DLMM yang cocok (hanya Solana; chain lain kosong, bukan perkiraan). Keamanan kontrak dan data holder berasal dari GoPlus di chain yang didukung. Smart LP ditandai tidak tersedia dan tidak pernah diisi perkiraan. Skor agent = 45% keamanan kontrak + 25% proxy distribusi holder (organik) + 30% kualitas pasar; untuk chain tanpa data GoPlus, skor hanya memakai data pasar DEX Screener.",
+      "Kandidat pasar berasal dari DEX Screener (boost terbaru/teratas, profil terbaru/baru diperbarui) dan token Uniswap v4 Robinhood Chain. Keamanan dan hitungan holder memakai GoPlus; maksimal 12 token Robinhood tanpa hitungan dari batch dicoba ulang per token. Bila hanya daftar holder tersedia, angka ditandai sebagai batas minimum; data yang tidak tersedia tetap ditampilkan sebagai tidak tersedia, bukan dikarang. Fee/TVL berasal dari Meteora DLMM hanya untuk Solana. Smart LP tidak tersedia dan tidak pernah diperkirakan.",
   };
   candidatesCache = { at: now, data: out, userId: activeUserId };
   return out;
@@ -1796,7 +1852,7 @@ async function handleRequest(req, res) {
       let v4Pools = [];
       try {
         agentOut = await runCandidateAgent();
-        if (at.source === "UNISWAP_V4") v4Pools = (await runUniswapV4AprScan()).pools;
+        if (at.source === "UNISWAP_V4") v4Pools = (await runPoolAprScan()).pools;
       } catch (e) {
         return sendJson(res, e.statusCode || 502, {
           error: e.message || "Agent analysis gagal. Coba lagi nanti.",
@@ -1809,25 +1865,24 @@ async function handleRequest(req, res) {
         for (const pool of v4Pools) {
           if (pool.apr < Number(at.minApr || 0) || pool.tvlUsd < Number(at.minLiquidity || 0)) continue;
           for (const token of [pool.token0, pool.token1]) {
-            const address = String(token && token.id || "").toLowerCase();
-            if (!/^0x[a-f0-9]{40}$/.test(address) || /^0x0{40}$/.test(address)) continue;
-            const key = pool.chain + ":" + address;
+            const address = String(token && token.id || "");
+            if (!isPoolTokenAddress(pool.chain, address)) continue;
+            const key = tokenAddressKey(pool.chain, address);
             const previous = bestByToken.get(key);
             if (!previous || pool.apr > previous.apr) bestByToken.set(key, pool);
           }
         }
-        candidates = candidates.filter((candidate) => bestByToken.has(String(candidate.chain || "") + ":" + String(candidate.address || "").toLowerCase()))
+        candidates = candidates.filter((candidate) => bestByToken.has(tokenAddressKey(candidate.chain, candidate.address)))
           .map((candidate) => {
-            const key = String(candidate.chain || "") + ":" + String(candidate.address || "").toLowerCase();
-            const pool = bestByToken.get(key);
-            return { ...candidate, uniswap_v4_apr: pool.apr, uniswap_v4_pool_id: pool.poolId, uniswap_v4_tvl_usd: pool.tvlUsd };
-          }).sort((a, b) => b.uniswap_v4_apr - a.uniswap_v4_apr);
+            const pool = bestByToken.get(tokenAddressKey(candidate.chain, candidate.address));
+            return { ...candidate, pool_apr: pool.apr, pool_protocol: pool.protocol, pool_id: pool.poolId, pool_tvl_usd: pool.tvlUsd };
+          }).sort((a, b) => b.pool_apr - a.pool_apr);
       } else {
         candidates = agentOut.recommendations || [];
       }
       const opened = [];
       const skipped = [];
-      const openAddrs = new Set(state.positions.filter((p) => p.status === "open").map((p) => (p.address || "").toLowerCase()));
+      const openAddrs = new Set(state.positions.filter((p) => p.status === "open").map((p) => tokenAddressKey(p.chain, p.address)));
       const rangePct =
         at.rangePreset === "narrow" ? 0.02
         : at.rangePreset === "wide" ? 0.1
@@ -1838,8 +1893,8 @@ async function handleRequest(req, res) {
         const sym = c.symbol || "???";
         const score = c.recommendation_score;
         const aVerdict = c.agent_analysis ? c.agent_analysis.verdict : null;
-        if (at.source === "UNISWAP_V4" && (c.uniswap_v4_apr == null || c.uniswap_v4_apr < Number(at.minApr || 0))) {
-          skipped.push({ symbol: sym, reason: "APR Uniswap v4 tidak memenuhi batas minimum." });
+        if (at.source === "UNISWAP_V4" && (c.pool_apr == null || c.pool_apr < Number(at.minApr || 0))) {
+          skipped.push({ symbol: sym, reason: "APR pool tidak memenuhi batas minimum." });
           continue;
         }
         if (!CHAINS.includes(c.chain)) {
@@ -1858,7 +1913,7 @@ async function handleRequest(req, res) {
           skipped.push({ symbol: sym, reason: "Chain " + c.chain + " tidak sesuai filter " + at.chainFilter + "." });
           continue;
         }
-        if (c.address && openAddrs.has(c.address.toLowerCase())) {
+        if (c.address && openAddrs.has(tokenAddressKey(c.chain, c.address))) {
           skipped.push({ symbol: sym, reason: "Sudah ada posisi open untuk token ini." });
           continue;
         }
@@ -1896,7 +1951,7 @@ async function handleRequest(req, res) {
           name: c.name,
           pair: c.pair_symbol || "",
           pairUrl: c.dexscreener_url || "",
-          poolAddress: c.uniswap_v4_pool_id || c.primary_pool_address || null,
+          poolAddress: c.pool_id || c.primary_pool_address || null,
           amount: Number(at.amountPerPosition),
           price,
           minPrice: roundPrice(price * (1 - rangePct)),
@@ -1914,11 +1969,14 @@ async function handleRequest(req, res) {
           skipped.push({ symbol: sym, reason: r.error });
           continue;
         }
-        opened.push({ symbol: c.symbol, chain: c.chain, amount: Number(at.amountPerPosition), price, apr: c.uniswap_v4_apr == null ? null : c.uniswap_v4_apr });
-        if (c.address) openAddrs.add(c.address.toLowerCase());
+        opened.push({ symbol: c.symbol, chain: c.chain, amount: Number(at.amountPerPosition), price, apr: c.pool_apr == null ? null : c.pool_apr, protocol: c.pool_protocol || null });
+        if (c.address) openAddrs.add(tokenAddressKey(c.chain, c.address));
         slots -= 1;
         allocated += Number(at.amountPerPosition);
         logAgent("Nara", "Membuka LP " + c.symbol + " (" + c.chain + ") sebesar " + at.amountPerPosition + " USDC pada " + price + " USDC.", "ok", r.pos.id);
+      }
+      if (at.source === "UNISWAP_V4" && !candidates.length) {
+        skipped.push({ symbol: "-", reason: "Tidak ada token pool APR yang cocok dengan feed analisis DEX Screener saat ini. Preview APR tidak otomatis membuka posisi; hanya kandidat yang dianalisis dan lolos semua guardrail yang dapat disimulasikan." });
       }
       logAgent("Nara", "Auto Trading selesai: " + opened.length + " dibuka, " + skipped.length + " dilewati (PnL hari ini " + today + " USDC).", "info");
       return sendJson(res, 200, { stoppedByDailyLoss: false, todayPnl: today, dailyLossLimit, opened, skipped });
@@ -2198,12 +2256,12 @@ async function handleRequest(req, res) {
       }
     }
 
-    if (pathname === "/api/uniswap-v4/pools" && req.method === "GET") {
+    if (["/api/pools/apr", "/api/uniswap-v4/pools"].includes(pathname) && req.method === "GET") {
       try {
-        return sendJson(res, 200, await runUniswapV4AprScan());
+        return sendJson(res, 200, await runPoolAprScan());
       } catch (e) {
         return sendJson(res, e.statusCode || 502, {
-          error: e.message || "Gagal mengambil data Uniswap v4.",
+          error: e.message || "Gagal mengambil data APR pool.",
           failedNetworks: e.failedNetworks || [],
         });
       }

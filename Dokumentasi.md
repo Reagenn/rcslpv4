@@ -107,7 +107,7 @@ lp-desk-local-v4/
 | `/api/reset` | POST | Kembali ke `defaultState()` bersih |
 | `/api/settings` | GET/POST | Baca/simpan settings 3 grup: `autoTrading`, `tpSl`, `copyTrading` (dengan validasi angka) |
 | `/api/agent-logs` | GET | 50 log aktivitas agent terakhir |
-| `/api/agent/auto-trading` | POST | Jalankan Nara: sumber DEX Screener atau pool estimasi APR Uniswap v4 multi-network + guardrail |
+| `/api/agent/auto-trading` | POST | Jalankan Nara: sumber DEX Screener atau pool APR Uniswap v4 + Meteora Solana, dengan guardrail |
 | `/api/agent/tp-sl-check` | POST | Byte: repricing live + `evaluateTpSlOnFreshPrices()` |
 | `/api/agent/copy-trading` | POST | Jalankan Kopi: buka posisi copy dari profil leader |
 | `/api/leaders` | GET/POST | Daftar leader (terurut winrate) / tambah leader |
@@ -117,7 +117,7 @@ lp-desk-local-v4/
 | `/api/dex/search` | GET | Proxy pencarian DexScreener (`?q=`) |
 | `/api/dex/token` | GET | Proxy pair per alamat token DexScreener (`?address=`) |
 | `/api/candidates` | GET | Kandidat Top LP/Discover dari `runCandidateAgent()` (cache 5 menit) |
-| `/api/uniswap-v4/pools` | GET | Pool Uniswap v4 multi-network dan estimasi APR berbasis GeckoTerminal (cache 5 menit; tanpa API key/Subgraph) |
+| `/api/pools/apr` | GET | APR Uniswap v4 EVM + Meteora DLMM Solana (cache 5 menit; no-key API); `/api/uniswap-v4/pools` tetap alias kompatibilitas |
 | `/api/copylp/discover` | GET | Penemuan pool Copy LP: `discoverPools()` (Meteora datapi + DexScreener) |
 | `/api/copylp/range` | POST | Hitung range DLMM server-side: `computeRange()` |
 | `/api/copylp/open` | POST | Buka posisi dari pool Copy LP (`openPositionInternal()`), `poolAddress` tersimpan |
@@ -208,12 +208,14 @@ Frontend: `searchLpTokens()`, `renderSearchResults()`, `tokenFromPair()`.
 Backend: `GET /api/dex/search`, `GET /api/dex/token`, `chainFromPair()`.
 Sumber: DexScreener.
 
-### Auto Trading: penemuan pool Uniswap v4 ber-APR tinggi
-Nara dapat memakai sumber kandidat `Uniswap v4 · estimasi APR multi-network`. Backend membaca daftar pool dari GeckoTerminal public REST API untuk Base, Ethereum, BNB Chain, Optimism, Arbitrum, Polygon, Avalanche, dan Unichain. Tidak perlu Subgraph atau API key; permintaan di-cache 5 menit. Pool dengan umur kurang dari 24 jam, TVL di bawah $10.000, volume tidak valid, atau fee tier yang tidak tercantum pada nama pool dikecualikan.
+### Auto Trading: preview pool APR multi-network
+Nara dapat memakai sumber `APR pool · Uniswap v4 + Meteora Solana`. Scanner membaca GeckoTerminal untuk pool Uniswap v4 di Base, Ethereum, BNB Chain, Robinhood Chain, Optimism, Arbitrum, Polygon, Avalanche, dan Unichain; Solana memakai daftar pool Meteora DLMM dari Data API. Tidak perlu Subgraph/API key; hasil di-cache 5 menit. Pool umur <24 jam, TVL <$10.000, volume/fee tidak valid dikecualikan.
 
-APR adalah estimasi `(volume 24 jam × fee tier) / TVL × 365 × 100`, bukan fee aktual yang terkumpul. Perhitungan ini dapat meleset untuk pool dengan hook atau dynamic fee. Token untuk Auto Trading tetap harus tersedia pada feed analisis dan lolos guardrail Nara. Hasil pemindai mencakup semua network yang terdata, tetapi posisi simulasi hanya dapat dibuka untuk chain yang didukung feed dan guardrail; chain lain tetap tampil di pemindai tanpa pemetaan diam-diam. Pool ID v4 disimpan sebagai referensi. Posisi tetap **simulasi**, bukan transaksi atau penyediaan likuiditas on-chain.
+Uniswap v4 APR indikatif dihitung `(volume 24 jam × fee tier) / TVL × 365 × 100`; Solana/Meteora dihitung `fee 24 jam API / TVL × 365 × 100`. Keduanya bukan jaminan hasil; hook/dynamic fee dapat membuat angka berbeda dari pendapatan LP. Solana bukan Uniswap v4, sehingga hasilnya ditandai `Meteora DLMM` dan memakai sumber terpisah.
 
-Frontend: modal `#naraModal`, `scanNaraV4Pools()`. Backend: `runUniswapV4AprScan()`, `POST /api/agent/auto-trading`.
+Tombol **Preview APR (tanpa trading)** hanya mencari dan menampilkan pool. Setelah preview tersedia, tombol **Jalankan simulasi dari pool APR** menjalankan Nara secara eksplisit setelah konfirmasi; Nara harus aktif, dan kandidat tetap harus ada pada feed analisis serta lolos semua guardrail. Jika tak ada kandidat yang cocok, alasan ditampilkan. Aplikasi tidak mengirim transaksi on-chain.
+
+Frontend: modal `#naraModal`, `scanNaraV4Pools()`, `runNara()`. Backend: `runPoolAprScan()`, `POST /api/agent/auto-trading`.
 
 ### 3. Terminal Open LP penuh + auto-pilot
 Terminal lengkap di tab Desk (range, Side, Quote, Min/Max, SL/TP, strategi,
@@ -325,7 +327,7 @@ Frontend: `renderDiscover()`, `discoverRows()`, `sparklineSvg()`,
 `saveDd()`, `copyCa()`, `openPoolFromDiscover()`. Backend:
 `GET /api/candidates` → `runCandidateAgent()`, `GET/POST /api/dd`.
 **Bentuk respons menyamakan `getlprecommendations` hosted persis:**
-`{ fetched_at, recommendations[10], pending_candidates[≤10],
+`{ fetched_at, recommendations[10], pending_candidates[≤50],
 source_note }`, dan setiap kandidat membawa field flat snake_case yang
 sama dengan hosted (`price_usd, liquidity_usd, volume_m5/h1/h6/h24,
 price_change_*, fee_tvl_5m/1h/6h/24h, holders_count, safety_score,
@@ -335,17 +337,18 @@ verdict (consider|review|avoid), confidence (high|low), status,
 holder_count, top_holders_percent, positives[], risks[], limitations[],
 sources[], analyzed_at}` dan `due_diligence{completed_checks,
 final_verdict, holder_verdict, cabal_control, social_history, notes,
-updated_at, …}` + `due_diligence_score`. Feed kandidat = DexScreener
-**token-boosts** + token-pairs (sesuai `source_note` hosted; fallback
-token-profiles bila boosts kosong). GoPlus Solana per alamat via
-`/v1/solana/token_security` — endpoint ini **menyediakan** `holder_count`
-+ `holders[]` (terverifikasi live), jadi holder Solana nyata dipakai
-(termasuk konsentrasi 10 holder teratas untuk proxy organik). Skor =
-45% security + 25% organic proxy + 30% market; chain tanpa GoPlus
-(mis. ROBINHOOD) hanya memakai data pasar dan limitation-nya menyebut
-itu persis seperti hosted. Kandidat tanpa data security:
-**SECURITY UNAVAILABLE** / confidence rendah. Sumber: DexScreener +
-Meteora DLMM Data API + GoPlus.
+updated_at, …}` + `due_diligence_score`. Feed menggabungkan DexScreener
+(boost terbaru/teratas, profil terbaru/baru diperbarui) dan token Uniswap v4
+Robinhood Chain; maksimum 60 kandidat, dengan prioritas hingga 40 token
+Robinhood. GoPlus Solana dipanggil per alamat via
+`/v1/solana/token_security`; maksimal 12 token Robinhood tanpa hitungan dari
+respons batch dicoba ulang per token agar refresh tidak tertahan. Jika API hanya memberikan daftar
+`holders[]`, UI menampilkan jumlah baris sebagai batas minimum (`≥`), bukan
+angka total. Jika tidak ada sumber yang menyediakan angka, UI menulis
+“Tidak tersedia” secara eksplisit dan tidak mengarang data. Skor = 45%
+security + 25% organic proxy + 30% market; chain yang tidak didukung GoPlus
+hanya memakai data pasar. Robinhood Chain memakai chain ID GoPlus 4663.
+Sumber: DexScreener + GeckoTerminal + Meteora DLMM Data API + GoPlus.
 
 ### 10. Copy LP (penemuan pool semua chain)
 Tempel CA → daftar pool Meteora DLMM Data API (Solana: harga, base +
@@ -406,8 +409,9 @@ gaya scene di `styles.css` (`.dock-scene`, `.char`, `.fox`, keyframes
 
 ### 13. Nara — Auto Trading LP
 Toggle (default NONAKTIF), min score, amount, max positions, chain filter,
-range preset, verdict filter, sumber kandidat (DEX Screener atau Uniswap v4
-estimasi APR multi-network), APR minimum; “Jalankan sekarang” memindai sumber terpilih;
+range preset, verdict filter, sumber kandidat (DEX Screener atau Uniswap v4 +
+Meteora Solana), APR minimum; tombol preview tidak membuka posisi. “Jalankan
+simulasi sekarang” memproses sumber terpilih dengan seluruh guardrail;
 batas modal 5.000 USDC; tidak membuka ulang token berposisi.
 Guardrail: batas kerugian harian (default 150, 0 = nonaktif, dari ledger
 hari ini via `todayPnl()`), likuiditas minimum (default 50.000), minimum

@@ -31,9 +31,9 @@ npm install   # tidak ada dependensi eksternal; memastikan struktur siap
 npm start     # menjalankan backend di http://localhost:3000
 ```
 
-Lalu buka **http://localhost:3000** di browser dan daftar akun. Pemindai APR Uniswap v4 menggunakan GeckoTerminal public REST API, jadi tidak memerlukan Subgraph, API key, atau konfigurasi `.env`. Data dipindai di beberapa network dan di-cache selama 5 menit; API publik dapat membatasi permintaan.
+Lalu buka **http://localhost:3000** di browser dan daftar akun. Preview APR memakai GeckoTerminal untuk pool Uniswap v4 pada network EVM termasuk Robinhood Chain, serta Meteora DLMM Data API untuk Solana. Tidak perlu Subgraph, API key, atau konfigurasi `.env`; hasil di-cache 5 menit.
 
-APR yang ditampilkan adalah estimasi dari volume 24 jam × fee tier pool ÷ TVL lalu dianualisasi. Ini bukan fee realisasi atau proyeksi keuntungan; hook/dynamic fee dapat membuat estimasi meleset. Auto Trading LP masih membuka posisi **simulasi**, bukan transaksi Uniswap v4 on-chain.
+Uniswap v4 APR diestimasi dari volume 24 jam × fee tier ÷ TVL × 365; Solana/Meteora menggunakan fee 24 jam yang dilaporkan API ÷ TVL × 365. Angka ini indikatif, bukan jaminan hasil. Tombol Preview hanya menampilkan pool; untuk membuka posisi **simulasi** aktifkan Nara dan tekan “Jalankan simulasi sekarang”. Aplikasi tidak mengirim transaksi on-chain.
 
 Akun pertama mengambil salinan state demo lama (`backend/data/data.json`); akun selanjutnya
 mendapat desk baru yang privat. State akun disimpan di `backend/data/users.json`

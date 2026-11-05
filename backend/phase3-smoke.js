@@ -5,14 +5,30 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
-const { normalizeGeckoPools } = require("./src/uniswap-v4");
+const {
+  UNISWAP_V4_NETWORKS,
+  normalizeGeckoPools,
+  normalizeMeteoraPools,
+  tokenAddressKey,
+  isPoolTokenAddress,
+} = require("./src/uniswap-v4");
 
 (async () => {
   const root = process.cwd();
   const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
   const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
-  assert(serverScript.includes("api.geckoterminal.com"), "Uniswap v4 scanner uses GeckoTerminal REST API");
-  assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "Uniswap v4 scanner does not use a Subgraph URL");
+  assert(serverScript.includes("api.geckoterminal.com"), "EVM APR scanner uses GeckoTerminal REST API");
+  assert(serverScript.includes("normalizeMeteoraPools"), "Solana APR scanner uses Meteora pool fee data");
+  assert(serverScript.includes("ROBINHOOD: 4663"), "Robinhood token security uses its supported GoPlus chain ID");
+  assert(serverScript.includes("/api/pools/apr"), "APR scanner has a protocol-neutral API route");
+  assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "APR scanner does not use a Subgraph URL");
+  assert(UNISWAP_V4_NETWORKS.some((network) => network.chain === "ROBINHOOD"), "Robinhood Chain v4 pools are included");
+  assert(frontendScript.includes("naraAprTradeBtn"), "APR preview provides an explicit simulation action");
+  assert(serverScript.includes("token-boosts/top/v1"), "candidate feed includes top boosted tokens");
+  assert(serverScript.includes("token-profiles/recent-updates/v1"), "candidate feed includes recently updated token profiles");
+  assert(serverScript.includes("slice(0, 40)"), "candidate feed prioritizes up to 40 Robinhood tokens");
+  assert(serverScript.includes("holder_count_is_lower_bound"), "partial holder lists are labeled as lower bounds");
+  assert(frontendScript.includes("Tidak tersedia"), "missing holder counts are labeled instead of rendered blank");
   const scanNow = Date.parse("2026-01-03T00:00:00Z");
   const geckoNetwork = { networkId: "base", chain: "BASE", chainName: "Base" };
   const tokenId = "base_0x1111111111111111111111111111111111111111";
@@ -43,6 +59,24 @@ const { normalizeGeckoPools } = require("./src/uniswap-v4");
   assert.equal(normalizedPools[0].estimatedFees24hUsd, 100, "estimated fees use volume multiplied by the fee tier");
   assert.equal(normalizedPools[0].apr, 36.5, "estimated APR is annualized against TVL");
   assert.equal(normalizedPools[0].chain, "BASE", "pool retains its network identity");
+
+  const solanaPools = normalizeMeteoraPools({ data: [{
+    address: "DLMMpoolAddress",
+    token_x: { address: "So11111111111111111111111111111111111111112", symbol: "SOL" },
+    token_y: { address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol: "USDC" },
+    created_at: Date.parse("2026-01-01T00:00:00Z"),
+    tvl: 100000,
+    volume: { "24h": 100000 },
+    fees: { "24h": 100 },
+    pool_config: { base_fee_pct: 0.04 },
+    dynamic_fee_pct: 0,
+  }] }, scanNow);
+  assert.equal(solanaPools.length, 1, "Meteora Solana pool is normalized");
+  assert.equal(solanaPools[0].protocol, "Meteora DLMM", "Solana pool is not mislabeled Uniswap v4");
+  assert.equal(solanaPools[0].apr, 36.5, "Solana APR uses reported 24h fees and TVL");
+  assert(isPoolTokenAddress("SOL", solanaPools[0].token0.id), "Solana mint addresses are accepted");
+  assert.notEqual(tokenAddressKey("SOL", "Abc"), tokenAddressKey("SOL", "abc"), "Solana address matching preserves Base58 case");
+  assert.equal(tokenAddressKey("BASE", "0xABCD"), tokenAddressKey("BASE", "0xabcd"), "EVM address matching is case-insensitive");
   for (const config of [
     'const BASE_MAINNET_CHAIN_ID = "0x2105"',
     "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
@@ -183,7 +217,7 @@ const { normalizeGeckoPools } = require("./src/uniswap-v4");
     result = await request("/api/auth/login", "POST", null, { username: "alice", password: "wrong-password" });
     assert.equal(result.response.status, 401, "invalid password rejected");
 
-    console.log("Smoke tests passed: Base Mainnet config, SPA assets, auth, private defaults, account isolation, follow, leaderboard, CSRF and logout.");
+    console.log("Smoke tests passed: pool APR normalization (Uniswap v4, Robinhood and Solana/Meteora), Base Mainnet config, SPA assets, auth, private defaults, account isolation, follow, leaderboard, CSRF and logout.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();

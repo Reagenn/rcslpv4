@@ -342,7 +342,7 @@
                     ><strong>Nara</strong><span class="crew-status"><span class="status-dot" id="dot-nara"></span><span id="crewStatus-nara">NONAKTIF</span></span></span
                   >
                   <span class="crew-role">Auto Trading LP</span>
-                  <span class="crew-desc">Memindai kandidat DEX atau pool Uniswap v4 multi-network, lalu membuka posisi LP simulasi setelah guardrail lolos.</span>
+                  <span class="crew-desc">Memindai kandidat DEX atau pool APR Uniswap v4 dan Meteora Solana, lalu membuka posisi simulasi setelah guardrail lolos.</span>
                   <span class="crew-link">Atur agent →</span>
                 </button>
                 <button class="crew-card" data-agent="byte" type="button">
@@ -924,16 +924,16 @@
           <label>Sumber kandidat
             <select id="naraSource">
               <option value="DEX">DEX Screener (default)</option>
-              <option value="UNISWAP_V4">Uniswap v4 · estimasi APR multi-network</option>
+              <option value="UNISWAP_V4">APR pool · Uniswap v4 + Meteora Solana</option>
             </select>
           </label>
-          <label>APR minimum Uniswap v4 (%) <input id="naraMinApr" type="number" min="0" max="100000" step="any" /></label>
+          <label>APR minimum pool (%) <input id="naraMinApr" type="number" min="0" max="100000" step="any" /></label>
         </div>
-        <p class="muted">Pemindai menggunakan data volume dan TVL GeckoTerminal publik. APR indikatif = volume 24 jam × fee tier / TVL × 365; bukan fee realisasi atau jaminan hasil. Hook/dynamic fee dapat membuat estimasi meleset. Pemindaian pool mencakup network yang tersedia di GeckoTerminal; Auto Trading hanya memakai kandidat dari chain yang didukung feed dan guardrail aplikasi.</p>
+        <p class="muted">APR pool mencakup Uniswap v4 EVM (GeckoTerminal) dan Meteora DLMM Solana (fee 24 jam dari API). Solana bukan Uniswap v4. APR indikatif, bukan jaminan hasil; fee hook/dynamic dapat berubah. Auto Trading hanya membuat posisi simulasi untuk kandidat yang tersedia di feed dan lolos semua guardrail.</p>
         <div class="actions">
           <button id="naraSaveBtn" class="primary" type="button">Simpan pengaturan</button>
-          <button id="naraV4ScanBtn" type="button">Cari pool APR v4</button>
-          <button id="naraRunBtn" type="button">Jalankan sekarang</button>
+          <button id="naraV4ScanBtn" type="button">Preview APR (tanpa trading)</button>
+          <button id="naraRunBtn" type="button">Jalankan simulasi sekarang</button>
         </div>
         <div id="naraV4Pools" class="run-out"></div>
         <div id="naraRunOut" class="run-out"></div>
