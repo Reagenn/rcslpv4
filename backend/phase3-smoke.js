@@ -13,6 +13,7 @@ const {
   isPoolTokenAddress,
 } = require("./src/uniswap-v4");
 const { migrateLegacyPositionRisk, positionExitReason } = require("./src/position-risk");
+const { autoTradingRiskReason } = require("./src/auto-trading-risk");
 
 (async () => {
   const root = process.cwd();
@@ -42,6 +43,19 @@ const { migrateLegacyPositionRisk, positionExitReason } = require("./src/positio
   assert.equal(migratedRisk.tpPnlPct, 10, "legacy open TP is migrated to an equivalent capital percentage");
   assert.equal(migratedRisk.sl, null, "legacy open price threshold is removed after migration");
   assert.equal(migrateLegacyPositionRisk({ status: "closed", entryPrice: 100, sl: 90 }).sl, 90, "closed history is not rewritten");
+  assert(serverScript.includes("autoTradingRiskReason"), "Auto Trading enforces backend risk hard-gates");
+  const riskNow = Date.parse("2026-06-12T00:00:00Z");
+  const safeCandidate = {
+    agent_analysis: { status: "complete", confidence: "high", security_score: 100, top_holders_percent: 20 },
+    holders_count: 800, liquidity_usd: 120000, volume_24h: 50000,
+    pair_created_at: riskNow - 48 * 60 * 60 * 1000, price_change_data_available: true,
+    price_change_24h: 8, price_change_h1: 2, price_change_h6: 5, price_change_m5: 1,
+  };
+  assert.equal(autoTradingRiskReason(safeCandidate, { now: riskNow }), null, "candidate passing all hard-gates is eligible for configured filters");
+  assert.match(autoTradingRiskReason({ ...safeCandidate, price_change_24h: -90 }, { now: riskNow }), /Perubahan harga 24 jam/, "rug-like daily price collapse is blocked");
+  assert.match(autoTradingRiskReason({ ...safeCandidate, agent_analysis: { ...safeCandidate.agent_analysis, status: "partial" } }, { now: riskNow }), /Data keamanan\/holder/, "incomplete security data is rejected");
+  assert.match(autoTradingRiskReason({ ...safeCandidate, pair_created_at: riskNow - 2 * 60 * 60 * 1000 }, { now: riskNow }), /Umur pool/, "new pools are rejected");
+  assert.match(autoTradingRiskReason({ ...safeCandidate, agent_analysis: { ...safeCandidate.agent_analysis, top_holders_percent: 45 } }, { now: riskNow }), /Konsentrasi 10 holder/, "concentrated holder ownership is rejected");
   const scanNow = Date.parse("2026-01-03T00:00:00Z");
   const geckoNetwork = { networkId: "base", chain: "BASE", chainName: "Base" };
   const tokenId = "base_0x1111111111111111111111111111111111111111";

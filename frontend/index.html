@@ -930,7 +930,7 @@
           </label>
           <label>APR minimum pool (%) <input id="naraMinApr" type="number" min="0" max="100000" step="any" /></label>
         </div>
-        <p class="muted">APR pool mencakup Uniswap v4 EVM (GeckoTerminal) dan Meteora DLMM Solana (fee 24 jam dari API). Solana bukan Uniswap v4. APR indikatif, bukan jaminan hasil; fee hook/dynamic dapat berubah. Auto Trading hanya membuat posisi simulasi untuk kandidat yang tersedia di feed dan lolos semua guardrail.</p>
+        <p class="muted">APR pool mencakup Uniswap v4 EVM (GeckoTerminal) dan Meteora DLMM Solana (fee 24 jam dari API). Solana bukan Uniswap v4. APR indikatif, bukan jaminan hasil. Hard-gate Auto Trading menolak data keamanan/holder yang tidak lengkap, konsentrasi 10 holder ≥40%, skor keamanan &lt;95, pool &lt;24 jam, likuiditas &lt;$50.000, volume 24 jam &lt;$25.000, atau pergerakan harga ekstrem (24j ±50%, 6j ±40%, 1j ±25%, 5m ±15%). Filter ini mengurangi risiko, tetapi tidak dapat menjamin token bebas rug atau LP terkunci.</p>
         <div class="actions">
           <button id="naraSaveBtn" class="primary" type="button">Simpan pengaturan</button>
           <button id="naraV4ScanBtn" type="button">Preview APR (tanpa trading)</button>

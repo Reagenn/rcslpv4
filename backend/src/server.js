@@ -22,6 +22,7 @@ const {
   isPoolTokenAddress,
 } = require("./uniswap-v4");
 const { migrateLegacyPositionRisk, positionExitReason } = require("./position-risk");
+const { autoTradingRiskReason } = require("./auto-trading-risk");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -967,6 +968,7 @@ async function runCandidateAgent() {
     else if (total < 40) verdict = "avoid";
     else verdict = "review";
     const pc = e.pair.priceChange || {};
+    const priceChangeDataAvailable = ["h24", "h1", "h6", "m5"].every((period) => pc[period] != null && Number.isFinite(Number(pc[period])));
     const vol = e.pair.volume || {};
     const liquidity = round2(e.pair.liquidity?.usd || 0);
     const volume24h = round2(vol.h24 || 0);
@@ -1059,6 +1061,7 @@ async function runCandidateAgent() {
       market_status: marketStatus,
       name: e.name,
       pair_created_at: e.pair.pairCreatedAt || null,
+      price_change_data_available: priceChangeDataAvailable,
       pair_symbol: ((e.pair.baseToken && e.pair.baseToken.symbol) || "?") + "/" + ((e.pair.quoteToken && e.pair.quoteToken.symbol) || "?"),
       pool_count: e.poolCount || 0,
       price_change_24h: pc.h24 || 0,
@@ -1914,6 +1917,11 @@ async function handleRequest(req, res) {
         }
         if (!CHAINS.includes(c.chain)) {
           skipped.push({ symbol: sym, reason: "Chain " + c.chain + " di luar 7 chain simulasi." });
+          continue;
+        }
+        const safetyReason = autoTradingRiskReason(c, { minLiquidityUsd: at.minLiquidity, minHolderCount: at.minHolder });
+        if (safetyReason) {
+          skipped.push({ symbol: sym, reason: safetyReason });
           continue;
         }
         if (score == null || Number(score) < Number(at.minScore)) {

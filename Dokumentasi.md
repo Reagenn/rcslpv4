@@ -420,7 +420,12 @@ batas modal 5.000 USDC; tidak membuka ulang token berposisi.
 Guardrail: batas kerugian harian (default 150, 0 = nonaktif, dari ledger
 hari ini via `todayPnl()`), likuiditas minimum (default 50.000), minimum
 holder (default 500; data holder tidak tersedia = **gagal**, bukan lolos).
-Alasan skip menampilkan angka aktual. Frontend: `fillNaraForm()`,
+Hard-gate backend menolak skor keamanan <95 atau data GoPlus/holder tidak
+lengkap, konsentrasi 10 holder ≥40%, pool berumur <24 jam, likuiditas <$50k,
+volume 24 jam <$25k, dan perubahan harga ekstrem (24j ±50%, 6j ±40%, 1j
+±25%, 5m ±15%). Hard-gate tidak menjamin bebas rug/LP terkunci; data sumber
+publik tidak membuktikan lock likuiditas dan rug dapat terjadi setelah posisi
+dibuka. Alasan skip ditampilkan. Frontend: `fillNaraForm()`,
 `readNaraForm()`, `runNara()`, modal `#naraModal`. Backend:
 `POST /api/agent/auto-trading`.
 
