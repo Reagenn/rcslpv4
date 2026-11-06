@@ -104,6 +104,7 @@ lp-desk-local-v4/
 | `/api/following` | GET/POST | Daftar follow; follow/unfollow akun |
 | `/api/leaderboard` | GET | Akun yang opt-in, dengan net worth hanya jika dibagikan |
 | `/api/state` | GET | Seluruh state UI: balances, positions (via `positionPublic`), transactions, pnlLedger, dueDiligence, leaders, settings, agentLogs |
+| `/api/balance/fund` | POST | Tambah USDC simulasi ke satu chain (maks. $1.000.000 per pengisian), dicatat sebagai transaksi deposit simulasi |
 | `/api/reset` | POST | Kembali ke `defaultState()` bersih |
 | `/api/settings` | GET/POST | Baca/simpan settings 3 grup: `autoTrading`, `tpSl`, `copyTrading` (dengan validasi angka) |
 | `/api/agent-logs` | GET | 50 log aktivitas agent terakhir |
@@ -233,9 +234,11 @@ halaman utama. Frontend: `openLp()`, `autopilotPick()`, panel
 `#openLpPanel`. Backend: `POST /api/lp/open` → `openPositionInternal()`.
 
 ### 4. Saldo simulasi, buy/sell, riwayat, persistensi
-Saldo USDC + token per chain, buy/sell simulasi, riwayat transaksi, semua
-persisten di `data.json`. Frontend: `renderBalances()`,
-`renderTransactions()`, `doTrade()`, panel `#balancesPanel`. Backend:
+Saldo USDC + token per chain, isi saldo USDC simulasi per chain, buy/sell simulasi,
+riwayat transaksi, semua persisten di `data.json`. Isi saldo hanya simulasi,
+terbatas $1.000.000 per pengisian, masuk riwayat sebagai `DEPOSIT` dan bukan
+PnL. Frontend: `renderBalances()`, `renderTransactions()`, `fundSimulatedBalance()`,
+`doTrade()`, panel `#balancesPanel`. Backend: `POST /api/balance/fund`,
 `POST /api/trade`, `defaultState()`, `saveState()`.
 
 Koneksi wallet browser EIP-1193 terpisah dari ledger simulasi. Fitur swap

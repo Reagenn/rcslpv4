@@ -241,7 +241,7 @@
         <section class="panel" id="balancesPanel">
           <p class="eyebrow">SIMULATED BALANCES</p>
           <h2>Saldo per Chain</h2>
-          <p class="muted">Saldo USDC simulasi per chain + kepemilikan token dari buy/sell simulasi. Konversi IDR dan ETH memakai kurs manual yang tersimpan di browser; bukan saldo wallet nyata.</p>
+          <p class="muted">Saldo USDC simulasi per chain + kepemilikan token dari buy/sell simulasi. Tambahkan saldo simulasi secara terpisah pada kartu chain; bukan deposit wallet nyata. Konversi IDR dan ETH memakai kurs manual yang tersimpan di browser.</p>
           <div class="desk-toolbar">
             <span class="muted">Total simulasi</span><strong id="balanceTotal" class="num">—</strong>
             <div class="seg" id="balCurSeg">
@@ -253,6 +253,7 @@
             <label class="rate-field">1 ETH = <input id="rateEth" type="number" min="0" step="any" placeholder="USD" /> USD</label>
           </div>
           <div id="balanceGrid" class="balance-grid"></div>
+          <p id="balanceMsg" class="muted" role="status" aria-live="polite"></p>
           <div class="trade-box">
             <h3>Buy / Sell Simulasi</h3>
             <div class="two">

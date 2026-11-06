@@ -166,6 +166,8 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
 
     let result = await request("/api/state");
     assert.equal(result.response.status, 401, "desk API requires authentication");
+    result = await request("/api/balance/fund", "POST", null, { chain: "SOL", amount: 10 });
+    assert.equal(result.response.status, 401, "simulated top-up requires authentication");
     result = await request("/api/auth/me");
     assert.equal(result.data.user, null, "anonymous session response");
 
@@ -178,6 +180,16 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
     const cookieB = result.response.headers.get("set-cookie").split(";")[0];
     result = await request("/api/auth/me", "GET", cookieA);
     assert.equal(result.data.user.username, "alice", "first session is valid");
+    result = await request("/api/balance/fund", "POST", cookieA, { chain: "SOL", amount: 125.5 });
+    assert.equal(result.response.status, 200, "authenticated user can fund a simulated chain balance");
+    assert.equal(result.data.balances.SOL.usdc, 1625.5, "top-up adds USDC to the selected chain only");
+    assert.equal(result.data.transactions[0].side, "deposit", "simulated top-up is recorded in transaction history");
+    result = await request("/api/balance/fund", "POST", cookieA, { chain: "NOT_A_CHAIN", amount: 10 });
+    assert.equal(result.response.status, 400, "invalid chain top-up is rejected");
+    result = await request("/api/balance/fund", "POST", cookieA, { chain: "SOL", amount: 1000000.01 });
+    assert.equal(result.response.status, 400, "oversized simulated top-up is rejected");
+    result = await request("/api/state", "GET", cookieB);
+    assert.equal(result.data.balances.SOL.usdc, 1500, "simulated top-up is isolated to its account");
 
     result = await request("/api/profile", "GET", cookieA);
     assert.equal(result.data.sharePositions, false, "positions private by default: " + JSON.stringify(result.data));

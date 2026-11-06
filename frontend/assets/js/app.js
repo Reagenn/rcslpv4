@@ -35,6 +35,7 @@ let posLayout = "cards";
 let posSortOrder = "newest";
 let posSearchQuery = "";
 let balanceCurrency = "USD";
+const balanceFundingInProgress = new Set();
 let balanceRates = {
   idr: Number(localStorage.getItem("rcslpv4-rate-idr")) || 0,
   eth: Number(localStorage.getItem("rcslpv4-rate-eth")) || 0,
@@ -328,6 +329,10 @@ function formatBalanceAmount(usd) {
 function renderBalances() {
   if (!deskState) return;
   const grid = $("balanceGrid");
+  const fundingValues = new Map(Array.from(grid.querySelectorAll("[data-fund-amount]"), (input) => [input.dataset.fundAmount, input.value]));
+  const focusedFundChain = grid.contains(document.activeElement) && document.activeElement.matches("[data-fund-amount]")
+    ? document.activeElement.dataset.fundAmount
+    : null;
   const totalUsd = CHAINS.reduce((sum, c) => sum + (Number(deskState.balances?.[c]?.usdc) || 0), 0);
   $("balanceTotal").textContent = formatBalanceAmount(totalUsd);
   document.querySelectorAll("#balCurSeg [data-cur]").forEach((b) => b.classList.toggle("active", b.dataset.cur === balanceCurrency));
@@ -341,9 +346,39 @@ function renderBalances() {
       formatBalanceAmount(Number(b.usdc) || 0) +
       "</strong>" +
       (toks.length ? toks.map(([, t]) => '<span class="tok">' + esc(t.symbol) + ": " + Number(t.qty).toFixed(4) + "</span>").join("<br>") : '<span class="tok">Tidak ada token simulasi</span>') +
+      '<form class="balance-fund-row" data-fund-form="' + c + '"><input type="number" min="0.01" max="1000000" step="0.01" placeholder="Tambah USDC" aria-label="Nominal USDC simulasi untuk ' + c + '" data-fund-amount="' + c + '" required /><button class="secondary" type="submit"' + (balanceFundingInProgress.has(c) ? " disabled" : "") + '>Isi saldo</button></form>' +
       "</div>"
     );
   }).join("");
+  for (const input of grid.querySelectorAll("[data-fund-amount]")) {
+    if (fundingValues.has(input.dataset.fundAmount)) input.value = fundingValues.get(input.dataset.fundAmount);
+  }
+  if (focusedFundChain) grid.querySelector("[data-fund-amount=\"" + focusedFundChain + "\"]")?.focus({ preventScroll: true });
+}
+
+async function fundSimulatedBalance(chain) {
+  if (balanceFundingInProgress.has(chain)) return;
+  const grid = $("balanceGrid");
+  const input = grid.querySelector("[data-fund-amount=\"" + chain + "\"]");
+  const requestedAmount = Number(input && input.value);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > 1_000_000) {
+    setMsg("balanceMsg", "Masukkan nominal USDC di atas 0, maksimal $1.000.000 per pengisian.", true);
+    return;
+  }
+  balanceFundingInProgress.add(chain);
+  const button = grid.querySelector("[data-fund-form=\"" + chain + "\"] button");
+  if (button) button.disabled = true;
+  try {
+    const result = await postJson("/api/balance/fund", { chain, amount: requestedAmount });
+    if (input) input.value = "";
+    setMsg("balanceMsg", "Saldo simulasi " + chain + " ditambah " + fmtMoney(result.amount) + " USDC. Ini bukan deposit wallet dan bukan PnL.");
+    await loadState();
+  } catch (error) {
+    setMsg("balanceMsg", error.friendly || error.message || "Gagal menambah saldo simulasi.", true);
+  } finally {
+    balanceFundingInProgress.delete(chain);
+    renderBalances();
+  }
 }
 function setWalletStatus(message, isError) {
   const el = $("walletStatus");
@@ -3714,6 +3749,12 @@ function init() {
   $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());
   $("downloadCardBtnTop").addEventListener("click", () => {
     downloadCard().catch((e) => setMsg("cardMsg", e.message, true));
+  });
+  $("balanceGrid").addEventListener("submit", (event) => {
+    const form = event.target.closest("form[data-fund-form]");
+    if (!form) return;
+    event.preventDefault();
+    fundSimulatedBalance(form.dataset.fundForm);
   });
   $("tradeBuyBtn").addEventListener("click", () => doTrade("buy"));
   $("tradeSellBtn").addEventListener("click", () => doTrade("sell"));

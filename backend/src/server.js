@@ -54,6 +54,7 @@ const FRONTEND_DIR = path.join(__dirname, "..", "..", "frontend");
 
 const CHAINS = ["SOL", "BASE", "ROBINHOOD", "BSC", "HYPEREVM", "ARC", "ETH"];
 const TOTAL_PORTFOLIO_USDC = 5000;
+const MAX_SIMULATED_TOPUP_USDC = 1_000_000;
 
 // DexScreener chainId -> our chain label. Pair dari chainId lain DITOLAK
 // dengan pesan jelas (tidak pernah dipetakan diam-diam ke chain lain).
@@ -1773,6 +1774,32 @@ async function handleRequest(req, res) {
         settings: state.settings,
         agentLogs: (state.agentLogs || []).slice(0, 20),
       });
+    }
+
+    if (pathname === "/api/balance/fund" && req.method === "POST") {
+      const b = await readBody(req);
+      const chain = String(b.chain || "").toUpperCase();
+      const requestedAmount = Number(b.amount);
+      const amount = round2(requestedAmount);
+      if (!CHAINS.includes(chain)) return sendJson(res, 400, { error: "Chain tidak valid." });
+      if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > MAX_SIMULATED_TOPUP_USDC || amount <= 0) {
+        return sendJson(res, 400, { error: "Nominal isi saldo harus lebih dari 0 dan maksimal $1.000.000 USDC per pengisian." });
+      }
+      if (!state.balances[chain]) state.balances[chain] = { usdc: 0, tokens: {} };
+      state.balances[chain].usdc = round2((Number(state.balances[chain].usdc) || 0) + amount);
+      state.transactions.unshift({
+        id: uid("tx"),
+        chain,
+        symbol: "USDC",
+        address: "",
+        side: "deposit",
+        amount,
+        price: 1,
+        at: new Date().toISOString(),
+      });
+      state.transactions = state.transactions.slice(0, 100);
+      saveState(state);
+      return sendJson(res, 200, { ok: true, chain, amount, balance: state.balances[chain].usdc, balances: state.balances, transactions: state.transactions });
     }
 
     if (pathname === "/api/reset" && req.method === "POST") {
