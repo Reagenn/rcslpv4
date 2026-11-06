@@ -119,7 +119,7 @@
           <div class="strip-col strip-accent">
             <span class="strip-label">DESK NET PNL VS HOLDING</span>
             <div class="strip-value-row"><strong id="stripNetPnl" class="num">—</strong><span id="stripNetPnlPct" class="strip-pct pos">—</span></div>
-            <p class="muted">LP value + earned/claimed fees + rewards − hold benchmark</p>
+            <p class="muted">Selisih nilai LP terhadap strategi hold; bukan PnL posisi aktual.</p>
           </div>
           <div class="strip-col">
             <span class="strip-label">PORTFOLIO REALTIME <span class="live-dot small" aria-hidden="true"></span></span>
@@ -456,14 +456,15 @@
               <input id="lpMaxPct" type="number" step="any" value="20" />
             </label>
             <label
-              >Stop loss %
-              <input id="lpSl" type="number" step="any" placeholder="-28" />
+              >Stop loss (% dari modal posisi)
+              <input id="lpSl" type="number" min="0" step="any" value="10" />
             </label>
             <label
-              >Take profit %
-              <input id="lpTp" type="number" step="any" placeholder="22" />
+              >Take profit (% dari modal posisi)
+              <input id="lpTp" type="number" min="0" step="any" value="10" />
             </label>
           </div>
+          <p class="muted">TP/SL dihitung dari PnL posisi LP terhadap modal USD, bukan dari perubahan harga token. Contoh: modal $250 dan TP 10% berarti target profit $25.</p>
           <div class="dist-wrap">
             <div class="dist-bar"><span id="distBarQuote" class="dist-quote" style="width: 50%"></span><span id="distBarToken" class="dist-token" style="width: 50%"></span></div>
             <div class="row-between">
@@ -950,13 +951,14 @@
         </div>
         <label class="check"><input type="checkbox" id="byteArmed" /> Armed (nonaktif = paused)</label>
         <div class="two">
-          <label>TP default posisi baru (%) <input id="byteTp" type="number" min="0" step="any" /></label>
-          <label>SL default posisi baru (%) <input id="byteSl" type="number" min="0" step="any" /></label>
+          <label>TP default posisi baru (% dari modal posisi) <input id="byteTp" type="number" min="0" step="any" /></label>
+          <label>SL default posisi baru (% dari modal posisi) <input id="byteSl" type="number" min="0" step="any" /></label>
         </div>
         <div class="actions">
           <button id="byteSaveBtn" class="primary" type="button">Simpan pengaturan</button>
           <button id="byteCheckBtn" type="button">Periksa TP/SL sekarang (harga live)</button>
         </div>
+        <p class="muted">Byte menutup posisi saat PnL LP mencapai persentase target dari modal deposit. Posisi lama dengan SL/TP harga tetap memakai threshold harga lama.</p>
         <p id="byteCheckOut" class="muted"></p>
         <h4>Jarak posisi ke TP/SL</h4>
         <div id="byteChart" class="byte-chart"></div>

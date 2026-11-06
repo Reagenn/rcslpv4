@@ -12,6 +12,7 @@ const {
   tokenAddressKey,
   isPoolTokenAddress,
 } = require("./src/uniswap-v4");
+const { migrateLegacyPositionRisk, positionExitReason } = require("./src/position-risk");
 
 (async () => {
   const root = process.cwd();
@@ -21,6 +22,8 @@ const {
   assert(serverScript.includes("normalizeMeteoraPools"), "Solana APR scanner uses Meteora pool fee data");
   assert(serverScript.includes("ROBINHOOD: 4663"), "Robinhood token security uses its supported GoPlus chain ID");
   assert(serverScript.includes("/api/pools/apr"), "APR scanner has a protocol-neutral API route");
+  assert(serverScript.includes("pairs.filter((pair) => chainFromPair(pair) === chain)"), "live token prices are filtered to the position chain");
+  assert(serverScript.includes("byChainAddress"), "positions sharing an address on different chains are repriced separately");
   assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "APR scanner does not use a Subgraph URL");
   assert(UNISWAP_V4_NETWORKS.some((network) => network.chain === "ROBINHOOD"), "Robinhood Chain v4 pools are included");
   assert(frontendScript.includes("naraAprTradeBtn"), "APR preview provides an explicit simulation action");
@@ -29,6 +32,16 @@ const {
   assert(serverScript.includes("slice(0, 40)"), "candidate feed prioritizes up to 40 Robinhood tokens");
   assert(serverScript.includes("holder_count_is_lower_bound"), "partial holder lists are labeled as lower bounds");
   assert(frontendScript.includes("Tidak tersedia"), "missing holder counts are labeled instead of rendered blank");
+  assert.equal(positionExitReason({ amount: 250, slPnlPct: 10, tpPnlPct: 10 }, 2222, 5.8), null, "large token price gains do not trigger TP if LP PnL is below the USD target");
+  assert.equal(positionExitReason({ amount: 250, slPnlPct: 10, tpPnlPct: 10 }, 900, 25), "TP", "TP triggers at 10% of the USD position amount");
+  assert.equal(positionExitReason({ amount: 250, slPnlPct: 10, tpPnlPct: 10 }, 900, -25), "SL", "SL triggers at 10% of the USD position amount");
+  assert.equal(positionExitReason({ amount: 100, sl: 90, tp: 110 }, 111, 0), "TP", "legacy absolute-price TP positions remain supported");
+  assert.equal(positionExitReason({ amount: 250, slPnlPct: 10, tp: 110 }, 111, 0), "TP", "a legacy absolute-price TP remains active beside a PnL-based SL");
+  const migratedRisk = migrateLegacyPositionRisk({ status: "open", entryPrice: 100, sl: 90, tp: 110 });
+  assert.equal(migratedRisk.slPnlPct, 10, "legacy open SL is migrated to an equivalent capital percentage");
+  assert.equal(migratedRisk.tpPnlPct, 10, "legacy open TP is migrated to an equivalent capital percentage");
+  assert.equal(migratedRisk.sl, null, "legacy open price threshold is removed after migration");
+  assert.equal(migrateLegacyPositionRisk({ status: "closed", entryPrice: 100, sl: 90 }).sl, 90, "closed history is not rewritten");
   const scanNow = Date.parse("2026-01-03T00:00:00Z");
   const geckoNetwork = { networkId: "base", chain: "BASE", chainName: "Base" };
   const tokenId = "base_0x1111111111111111111111111111111111111111";
@@ -176,9 +189,15 @@ const {
     assert.equal(result.data.settings.autoTrading.minApr, 42, "account A APR threshold persists");
     result = await request("/api/lp/open", "POST", cookieA, {
       chain: "BASE", symbol: "TEST", address: "private-token-address", amount: 100,
-      price: 2, minPrice: 1, maxPrice: 3,
+      price: 2, minPrice: 1, maxPrice: 3, slPnlPct: 10, tpPnlPct: 10,
     });
     assert.equal(result.response.status, 200, "account A can create a simulated position");
+    assert.equal(result.data.position.slPnlPct, 10, "SL persists as a percentage of the USD position amount");
+    assert.equal(result.data.position.tpPnlPct, 10, "TP persists as a percentage of the USD position amount");
+    assert.equal(result.data.position.slPct, -10, "public SL percentage is displayed with a loss sign");
+    assert.equal(result.data.position.tpPct, 10, "public TP percentage is displayed with a profit sign");
+    assert.equal(result.data.position.net_pnl, 0, "net_pnl reports actual position PnL, not the hold delta");
+    assert.equal(result.data.position.net_pnl_vs_holding, 0, "hold-relative PnL is exposed separately");
     result = await request("/api/state", "GET", cookieB);
     assert.equal(result.data.positions.length, 0, "account B cannot see account A positions");
     result = await request("/api/state", "GET", cookieA);
@@ -217,7 +236,7 @@ const {
     result = await request("/api/auth/login", "POST", null, { username: "alice", password: "wrong-password" });
     assert.equal(result.response.status, 401, "invalid password rejected");
 
-    console.log("Smoke tests passed: pool APR normalization (Uniswap v4, Robinhood and Solana/Meteora), Base Mainnet config, SPA assets, auth, private defaults, account isolation, follow, leaderboard, CSRF and logout.");
+    console.log("Smoke tests passed: USD-based TP/SL, legacy migration, chain-scoped live prices, LP PnL vs hold metrics, APR normalization, auth and account isolation.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();

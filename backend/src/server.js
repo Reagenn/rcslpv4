@@ -21,6 +21,7 @@ const {
   tokenAddressKey,
   isPoolTokenAddress,
 } = require("./uniswap-v4");
+const { migrateLegacyPositionRisk, positionExitReason } = require("./position-risk");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -144,7 +145,10 @@ function loadState(filePath) {
     // Migrasi status lama 'rebalanced' -> 'closed' + closeReason 'rebalance'
     // (menyamakan hosted: posisi lama rebalance berstatus closed dan dirantai
     // lewat replaces/replacedBy).
-    merged.positions = (merged.positions || []).map((p) => (p && p.status === "rebalanced" ? { ...p, status: "closed", closeReason: p.closeReason || "rebalance" } : p));
+    merged.positions = (merged.positions || []).map((p) => {
+      const normalized = p && p.status === "rebalanced" ? { ...p, status: "closed", closeReason: p.closeReason || "rebalance" } : p;
+      return migrateLegacyPositionRisk(normalized);
+    });
     const pSettings = parsed.settings && typeof parsed.settings === "object" ? parsed.settings : {};
     const bs = defaultSettings();
     merged.settings = {
@@ -242,6 +246,8 @@ function openPositionInternal(fields) {
     quote: fields.quote || "USDC",
     sl: fields.sl != null ? Number(fields.sl) : null,
     tp: fields.tp != null ? Number(fields.tp) : null,
+    slPnlPct: fields.slPnlPct != null && Number(fields.slPnlPct) > 0 ? Math.abs(Number(fields.slPnlPct)) : null,
+    tpPnlPct: fields.tpPnlPct != null && Number(fields.tpPnlPct) > 0 ? Math.abs(Number(fields.tpPnlPct)) : null,
     binStepBps: Number(fields.binStepBps) || 25,
     fees: 0,
     rewards: 0,
@@ -1375,6 +1381,9 @@ function positionPublic(p) {
   // Valuasi + benchmark dari fungsi bersama valuePosition() (model
   // concentrated liquidity; lihat komentar di atas fungsi itu).
   const { value, holdValue, il } = valuePosition(p, current);
+  const positionPnl = p.status === "open"
+    ? round2(value + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0))
+    : p.closePnl != null ? round2(p.closePnl) : round2(value + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0));
   const netVsHolding = round2(value + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - holdValue);
   const inRange = current >= p.minPrice && current <= p.maxPrice;
   const bins = makeBins(p.entryPrice, p.binStepBps, 21);
@@ -1395,8 +1404,8 @@ function positionPublic(p) {
   const pctOf = (v) => (v != null && Number(v) > 0 && p.entryPrice > 0 ? round2((Number(v) / p.entryPrice - 1) * 100) : null);
   const minPct = pctOf(p.minPrice);
   const maxPct = pctOf(p.maxPrice);
-  const slPct = pctOf(p.sl);
-  const tpPct = pctOf(p.tp);
+  const slPct = p.slPnlPct != null ? -Math.abs(Number(p.slPnlPct)) : pctOf(p.sl);
+  const tpPct = p.tpPnlPct != null ? Math.abs(Number(p.tpPnlPct)) : pctOf(p.tp);
   const claimedFee = round2(Number(p.claimed) || 0);
   return {
     ...p,
@@ -1424,10 +1433,9 @@ function positionPublic(p) {
     current_price: current,
     position_value: value,
     hold_value: holdValue,
-    net_pnl:
-      p.status === "open" ? netVsHolding
-      : p.closePnl != null ? p.closePnl
-      : netVsHolding,
+    net_pnl: positionPnl,
+    net_pnl_vs_holding: netVsHolding,
+    position_pnl: positionPnl,
     impermanent_loss: il,
     unclaimed_fee: round2(Number(p.fees) || 0),
     claimed_fee: claimedFee,
@@ -1451,11 +1459,13 @@ function positionPublic(p) {
 
 /* ---------------- Live price + TP/SL helpers ---------------- */
 
-async function fetchLivePrice(address, fallback) {
+async function fetchLivePrice(address, fallback, chain) {
   if (!address) return fallback;
   try {
     const data = await fetchJson("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(address), 8000);
-    const pair = pickBestPair(data.pairs);
+    const pairs = Array.isArray(data.pairs) ? data.pairs : [];
+    const chainPairs = chain ? pairs.filter((pair) => chainFromPair(pair) === chain) : pairs;
+    const pair = pickBestPair(chainPairs);
     if (!pair || !pair.priceUsd) return fallback;
     return roundPrice(pair.priceUsd);
   } catch (_) {
@@ -1469,12 +1479,12 @@ function evaluateTpSlOnFreshPrices(openPositions) {
   for (const p of openPositions) {
     if (p.status !== "open") continue;
     const price = Number(p.currentPrice ?? p.entryPrice) || 0;
-    const hasSl = p.sl != null && Number(p.sl) > 0;
-    const hasTp = p.tp != null && Number(p.tp) > 0;
-    if (!hasSl && !hasTp) continue;
-    let reason = null;
-    if (hasSl && price <= Number(p.sl)) reason = "SL";
-    else if (hasTp && price >= Number(p.tp)) reason = "TP";
+    const hasPnlTarget = Number(p.slPnlPct) > 0 || Number(p.tpPnlPct) > 0;
+    const hasPriceTarget = (p.sl != null && Number(p.sl) > 0) || (p.tp != null && Number(p.tp) > 0);
+    if (!hasPnlTarget && !hasPriceTarget) continue;
+    const value = valuePosition(p, price).value;
+    const pnl = round2(value + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0));
+    const reason = positionExitReason(p, price, pnl);
     if (!reason) continue;
     const r = closePositionInternal(p, reason);
     if (!r.error) {
@@ -1505,21 +1515,26 @@ async function repriceOpenPositions() {
       changed = true;
     }
   }
-  const byAddr = {};
+  const byChainAddress = {};
   for (const p of opens) {
-    if (p.address) (byAddr[p.address] = byAddr[p.address] || []).push(p);
+    if (!p.address) continue;
+    const key = tokenAddressKey(p.chain, p.address);
+    (byChainAddress[key] = byChainAddress[key] || []).push(p);
   }
-  const addrs = Object.keys(byAddr);
-  if (!addrs.length) {
+  const tokenKeys = Object.keys(byChainAddress);
+  if (!tokenKeys.length) {
     if (changed) saveState(state);
     return;
   }
-  const results = await Promise.allSettled(addrs.map((addr) => fetchLivePrice(addr, null)));
+  const results = await Promise.allSettled(tokenKeys.map((key) => {
+    const position = byChainAddress[key][0];
+    return fetchLivePrice(position.address, null, position.chain);
+  }));
   results.forEach((res, i) => {
-    const addr = addrs[i];
+    const key = tokenKeys[i];
     const live = res.status === "fulfilled" ? res.value : null;
     if (live == null || !isFinite(live) || live <= 0) return;
-    for (const p of byAddr[addr]) {
+    for (const p of byChainAddress[key]) {
       if (Number(p.currentPrice) !== live) {
         p.currentPrice = live;
         changed = true;
@@ -1942,8 +1957,8 @@ async function handleRequest(req, res) {
           skipped.push({ symbol: sym, reason: "Harga kandidat tidak valid." });
           continue;
         }
-        const sl = Number(tp.defaultSlPct) > 0 ? roundPrice(price * (1 - Number(tp.defaultSlPct) / 100)) : null;
-        const tpPrice = Number(tp.defaultTpPct) > 0 ? roundPrice(price * (1 + Number(tp.defaultTpPct) / 100)) : null;
+        const slPnlPct = Number(tp.defaultSlPct) > 0 ? Number(tp.defaultSlPct) : null;
+        const tpPnlPct = Number(tp.defaultTpPct) > 0 ? Number(tp.defaultTpPct) : null;
         const r = openPositionInternal({
           chain: c.chain,
           address: c.address,
@@ -1959,8 +1974,8 @@ async function handleRequest(req, res) {
           side: "Both",
           strategy: "Spot",
           quote: "USDC",
-          sl,
-          tp: tpPrice,
+          slPnlPct,
+          tpPnlPct,
           binStepBps: c.chain === "SOL" ? 25 : 100,
           distribution: "50/50",
           source: "Auto Trading LP",
@@ -1983,9 +1998,9 @@ async function handleRequest(req, res) {
     }
 
     if (pathname === "/api/agent/tp-sl-check" && req.method === "POST") {
-      const opens = state.positions.filter((p) => p.status === "open" && ((p.sl != null && Number(p.sl) > 0) || (p.tp != null && Number(p.tp) > 0)));
+      const opens = state.positions.filter((p) => p.status === "open" && ((p.slPnlPct != null && Number(p.slPnlPct) > 0) || (p.tpPnlPct != null && Number(p.tpPnlPct) > 0) || (p.sl != null && Number(p.sl) > 0) || (p.tp != null && Number(p.tp) > 0)));
       const checked = opens.length;
-      const results = await Promise.allSettled(opens.map((p) => fetchLivePrice(p.address, null)));
+      const results = await Promise.allSettled(opens.map((p) => fetchLivePrice(p.address, null, p.chain)));
       let changed = false;
       results.forEach((res2, i) => {
         const live = res2.status === "fulfilled" ? res2.value : null;
@@ -2162,8 +2177,8 @@ async function handleRequest(req, res) {
       }
       const strategy = ["Spot", "Curve", "Bid-Ask"].includes(leader.strategy) ? leader.strategy : "Spot";
       const range = computeRange(target.price, 25, strategy, target.change24h);
-      const sl = Number(tp.defaultSlPct) > 0 ? roundPrice(target.price * (1 - Number(tp.defaultSlPct) / 100)) : null;
-      const tpPrice = Number(tp.defaultTpPct) > 0 ? roundPrice(target.price * (1 + Number(tp.defaultTpPct) / 100)) : null;
+      const slPnlPct = Number(tp.defaultSlPct) > 0 ? Number(tp.defaultSlPct) : null;
+      const tpPnlPct = Number(tp.defaultTpPct) > 0 ? Number(tp.defaultTpPct) : null;
       const r = openPositionInternal({
         chain: target.chain,
         address: target.address,
@@ -2180,8 +2195,8 @@ async function handleRequest(req, res) {
         side: "Both",
         strategy,
         quote: "USDC",
-        sl,
-        tp: tpPrice,
+        slPnlPct,
+        tpPnlPct,
         binStepBps: 25,
         distribution: "50/50",
         source: "Copy Trading LP",
@@ -2428,12 +2443,21 @@ async function handleRequest(req, res) {
 
     if (pathname === "/api/lp/open" && req.method === "POST") {
       const b = await readBody(req);
-      // Terminal hosted memakai SL/TP dalam PERSEN (posisi menyimpan sl_pct /
-      // tp_pct); konversi ke harga absolut di sini. Harga absolut (sl/tp)
-      // tetap diterima untuk kompatibilitas.
-      const openPrice = Number(b.price ?? b.entryPrice) || 0;
-      if (b.sl == null && b.slPct != null && openPrice > 0) b.sl = roundPrice(openPrice * (1 + Number(b.slPct) / 100));
-      if (b.tp == null && b.tpPct != null && openPrice > 0) b.tp = roundPrice(openPrice * (1 + Number(b.tpPct) / 100));
+      // SL/TP dari terminal adalah persentase PnL terhadap modal USD posisi.
+      // Alias slPct/tpPct tetap diterima; sl/tp absolut hanya untuk posisi lama.
+      if (b.slPnlPct == null && b.slPct != null) b.slPnlPct = Math.abs(Number(b.slPct));
+      if (b.tpPnlPct == null && b.tpPct != null) b.tpPnlPct = Math.abs(Number(b.tpPct));
+      for (const [field, value] of [["slPnlPct", b.slPnlPct], ["tpPnlPct", b.tpPnlPct]]) {
+        if (value != null && (!Number.isFinite(Number(value)) || Math.abs(Number(value)) > 100000)) {
+          return sendJson(res, 400, { error: field + " harus angka antara 0 dan 100000." });
+        }
+      }
+      if (b.slPnlPct != null || b.tpPnlPct != null || b.slPct != null || b.tpPct != null) {
+        b.slPnlPct = b.slPnlPct == null || Number(b.slPnlPct) === 0 ? null : Math.abs(Number(b.slPnlPct));
+        b.tpPnlPct = b.tpPnlPct == null || Number(b.tpPnlPct) === 0 ? null : Math.abs(Number(b.tpPnlPct));
+        b.sl = null;
+        b.tp = null;
+      }
       const r = openPositionInternal(b);
       if (r.error) return sendJson(res, 400, { error: r.error });
       return sendJson(res, 200, { ok: true, position: positionPublic(r.pos) });
@@ -2517,6 +2541,8 @@ async function handleRequest(req, res) {
         quote: old.quote,
         sl: old.sl,
         tp: old.tp,
+        slPnlPct: old.slPnlPct,
+        tpPnlPct: old.tpPnlPct,
         binStepBps: old.binStepBps,
         distribution: old.distribution,
         replaces: old.id,

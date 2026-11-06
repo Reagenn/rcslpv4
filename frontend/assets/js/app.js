@@ -1337,6 +1337,7 @@ function renderPositions() {
         p.replaces ? "Menggantikan posisi sebelumnya (rebalance)" : "",
         p.replacedBy ? "Digantikan oleh posisi rebalance" : "",
         !live && p.closePnl != null ? "PnL tutup " + fmtMoney(p.closePnl) : "",
+        !live && p.closeReason ? "Alasan tutup " + esc(p.closeReason) : "",
         !live && p.closedAt ? "Ditutup " + new Date(p.closedAt).toLocaleString("id-ID") : "",
       ]
         .filter(Boolean)
@@ -1396,7 +1397,7 @@ function renderPositions() {
         "<div><span>HOLD BENCHMARK</span><strong>" +
         fmtMoney(p.holdValue) +
         "</strong></div>" +
-        '<div><span>NET PNL VS HOLDING</span><strong class="' +
+        '<div><span>VS HOLD BENCHMARK (SELISIH)</span><strong class="' +
         (p.netVsHolding >= 0 ? "pos" : "neg") +
         '">' +
         fmtMoney(p.netVsHolding) +
@@ -1508,7 +1509,7 @@ function renderHolding() {
     "<div><span>Posisi terbuka</span><strong>" +
     opens.length +
     "</strong></div>" +
-    '<div><span>Desk Net PnL vs Holding (open)</span><strong class="' +
+    '<div><span>Selisih LP vs hold benchmark (open)</span><strong class="' +
     (netVsHolding >= 0 ? "pos" : "neg") +
     '">' +
     fmtMoney(netVsHolding) +
@@ -1909,10 +1910,13 @@ async function openLp() {
   }
   const minPrice = sel.price * (1 + minPct / 100);
   const maxPrice = sel.price * (1 + maxPct / 100);
-  // SL/TP terminal dalam PERSEN seperti hosted (SL negatif, mis. -28; TP
-  // positif, mis. 22) — server mengonversinya ke harga absolut.
-  const slPct = $("lpSl").value === "" ? null : Number($("lpSl").value);
-  const tpPct = $("lpTp").value === "" ? null : Number($("lpTp").value);
+  // SL/TP adalah persentase dari modal USD yang dipakai untuk posisi LP.
+  const slPnlPct = $("lpSl").value.trim() === "" ? null : Math.abs(Number($("lpSl").value));
+  const tpPnlPct = $("lpTp").value.trim() === "" ? null : Math.abs(Number($("lpTp").value));
+  if ([slPnlPct, tpPnlPct].some((value) => value != null && (!Number.isFinite(value) || value > 100000))) {
+    setMsg("lpMsg", "TP/SL harus angka dari 0 sampai 100000% modal.", true);
+    return;
+  }
   try {
     const r = await postJson("/api/lp/open", {
       chain,
@@ -1928,8 +1932,8 @@ async function openLp() {
       side: lpSideVal,
       strategy: lpStrategyVal,
       quote: $("lpQuote").value,
-      slPct,
-      tpPct,
+      slPnlPct,
+      tpPnlPct,
       binStepBps: Number($("lpBinStep").value) || 25,
       distribution: $("lpDistribution").value,
     });
@@ -2306,6 +2310,23 @@ function renderByteChart() {
   }
   box.innerHTML = opens
     .map((p) => {
+      const hasPnlSl = Number(p.slPnlPct) > 0;
+      const hasPnlTp = Number(p.tpPnlPct) > 0;
+      if (hasPnlSl || hasPnlTp) {
+        const currentPnl = p.status === "open"
+          ? (Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)
+          : Number(p.closePnl) || 0;
+        const currentPct = Number(p.amount) > 0 ? (currentPnl / Number(p.amount)) * 100 : 0;
+        const lo = hasPnlSl ? -Number(p.slPnlPct) : Math.min(0, currentPct);
+        const hi = hasPnlTp ? Number(p.tpPnlPct) : Math.max(0, currentPct);
+        const span = Math.max(0.01, hi - lo);
+        const pos = Math.max(0, Math.min(100, ((currentPct - lo) / span) * 100));
+        const slW = hasPnlSl ? ((-Number(p.slPnlPct) - lo) / span) * 100 : 0;
+        const tpW = hasPnlTp ? ((hi - Number(p.tpPnlPct)) / span) * 100 : 0;
+        const slTarget = hasPnlSl ? "−" + fmtPct(p.slPnlPct) + " (" + fmtMoney(Number(p.amount) * Number(p.slPnlPct) / 100) + ")" : "—";
+        const tpTarget = hasPnlTp ? "+" + fmtPct(p.tpPnlPct) + " (" + fmtMoney(Number(p.amount) * Number(p.tpPnlPct) / 100) + ")" : "—";
+        return '<div class="byte-row"><strong>' + esc(p.symbol) + '</strong> <span class="chain-badge">' + esc(p.chain) + "</span> PnL " + (currentPct >= 0 ? "+" : "") + currentPct.toFixed(2) + "% dari modal · SL " + slTarget + " · TP " + tpTarget + '<div class="byte-track"><span class="byte-sl" style="width:' + slW + '%"></span><span class="byte-tp" style="width:' + tpW + '%"></span><span class="byte-marker" style="left:calc(' + pos + '% - 2px)"></span></div></div>';
+      }
       const hasSl = p.sl != null && Number(p.sl) > 0;
       const hasTp = p.tp != null && Number(p.tp) > 0;
       if (!hasSl && !hasTp) return '<div class="byte-row"><strong>' + esc(p.symbol) + "</strong> — tanpa SL/TP.</div>";

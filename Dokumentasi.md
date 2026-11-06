@@ -219,10 +219,14 @@ Frontend: modal `#naraModal`, `scanNaraV4Pools()`, `runNara()`. Backend: `runPoo
 
 ### 3. Terminal Open LP penuh + auto-pilot
 Terminal lengkap di tab Desk (range, Side, Quote, Min/Max, SL/TP, strategi,
-chain, pencarian token/pool, distribusi aset). SL/TP terminal diisi dalam
-**persen** (SL negatif, mis. −28; TP positif, mis. 22) seperti hosted —
-server (`POST /api/lp/open`) mengonversinya ke harga absolut dan posisi
-menyimpan `sl_pct`/`tp_pct`. Tanpa token terpilih,
+chain, pencarian token/pool, distribusi aset). SL/TP terminal adalah
+**persentase PnL posisi terhadap modal USD**: modal $250 dengan TP 10% berarti
+target profit $25; SL 10% berarti batas rugi $25. Evaluasi memakai nilai LP
+termasuk fee/reward belum diklaim, bukan perubahan harga token. Posisi lama
+yang masih terbuka dimigrasikan dari threshold harga ke persentase modal yang
+setara; posisi closed tetap menyimpan data historisnya. Field API `net_pnl`
+adalah PnL posisi aktual; selisih dari strategi hold
+tersedia terpisah di `net_pnl_vs_holding`. Tanpa token terpilih,
 “Open LP” menjalankan auto-pilot: mencari sendiri alamat yang ditempel dan
 memilih pair likuiditas tertinggi. Token terminal terpisah **tidak ada** di
 halaman utama. Frontend: `openLp()`, `autopilotPick()`, panel
@@ -421,9 +425,11 @@ Alasan skip menampilkan angka aktual. Frontend: `fillNaraForm()`,
 `POST /api/agent/auto-trading`.
 
 ### 14. Byte — Auto TP/SL Guard
-Toggle armed/paused, TP/SL default posisi baru, grafik jarak per posisi ke
-TP/SL, tombol periksa yang menutup posisi menyentuh threshold memakai harga
-live. Frontend: `fillByteForm()`, `renderByteChart()`, modal `#byteModal`.
+Toggle armed/paused, TP/SL default posisi baru sebagai persentase modal USD,
+grafik PnL posisi menuju threshold, tombol periksa yang menutup posisi saat
+PnL LP menyentuh target berdasarkan harga live. Posisi open lama dimigrasikan
+ke persentase modal; histori closed tidak diubah. Frontend: `fillByteForm()`,
+`renderByteChart()`, modal `#byteModal`.
 Backend: `POST /api/agent/tp-sl-check`, `evaluateTpSlOnFreshPrices()`,
 `fetchLivePrice()`.
 
