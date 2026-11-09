@@ -118,6 +118,14 @@ body {
 }
 #profileEditor .account-card form { gap: 6px; }
 #profileEditor .check-row { margin: 4px 0; }
+.profile-avatar-upload { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.profile-avatar-upload label { flex: 1 1 260px; }
+.profile-avatar-preview { width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--line); object-fit: cover; background: var(--panel2); }
+.social-list-user { display: flex; align-items: center; gap: 10px; }
+.social-list-avatar { width: 44px; height: 44px; flex: 0 0 44px; border-radius: 50%; object-fit: cover; background: var(--panel); }
+.social-list-avatar.placeholder { display: inline-block; border: 1px solid var(--line); }
+.follow-relationship { color: var(--teal); font-size: 12px; font-weight: 700; }
+.social-item [data-follow-user] { margin-top: 6px; }
 .social-card a { color: var(--teal); text-decoration: none; }
 .account-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .check-row { display: flex; align-items: center; gap: 8px; }

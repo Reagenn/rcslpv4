@@ -101,7 +101,7 @@ lp-desk-local-v4/
 | `/api/auth/me` | GET | Memeriksa akun session saat ini |
 | `/api/profile` | GET/POST | Baca/simpan profil dan preferensi privacy |
 | `/api/profiles/:username` | GET | Profil publik; posisi/net worth hanya jika dipilih untuk dibagikan |
-| `/api/following` | GET/POST | Daftar follow; follow/unfollow akun |
+| `/api/following` | GET/POST | Daftar following + followers dan status mutual; follow/unfollow akun |
 | `/api/leaderboard` | GET | Akun yang opt-in, dengan net worth hanya jika dibagikan |
 | `/api/state` | GET | Seluruh state UI: balances, positions (via `positionPublic`), transactions, pnlLedger, dueDiligence, leaders, settings, agentLogs |
 | `/api/balance/fund` | POST | Tambah USDC simulasi ke satu chain (maks. $1.000.000 per pengisian), dicatat sebagai transaksi deposit simulasi |
@@ -500,17 +500,19 @@ aksi tetap perlu server online. Tombol install muncul saat browser mengirim
 ### 21. Akun privat, profil, follow, leaderboard
 Login/registrasi memakai password hash scrypt dan session cookie HttpOnly;
 semua API desk memerlukan session. Desk dipisah per user. Akun pertama
-mengklaim salinan state legacy satu kali. Profil dasar dapat dilihat publik,
-tetapi posisi simulasi/net worth tersembunyi secara default; kontrol share dan
-opt-in leaderboard ada di **Edit profil & privasi**. Following hanya menerima
-kolom publik yang memang dibagikan. Leaderboard diberi label simulasi, bukan
-track record trading. Frontend: `bootstrapAccount()`, `renderSocialRoute()` dan
-panel `#profileEditor`. Backend: `/api/auth/*`, `/api/profile(s)/*`,
+mengklaim salinan state legacy satu kali. Profil dasar dapat dilihat publik;
+foto avatar dapat diunggah sebagai JPEG terkompresi (maks. 32 KB) atau memakai
+URL HTTPS. Posisi simulasi/net worth tersembunyi secara default; kontrol share
+dan opt-in leaderboard ada di **Edit profil & privasi**. Halaman Following
+menampilkan daftar akun yang diikuti dan followers, menyediakan follow balik
+serta status saling follow. Leaderboard diberi label simulasi, bukan track
+record trading. Frontend: `bootstrapAccount()`, `renderSocialRoute()` dan panel
+`#profileEditor`. Backend: `/api/auth/*`, `/api/profile(s)/*`,
 `/api/following`, `/api/leaderboard`.
 
 Smoke test terisolasi (menyalin server ke direktori sementara):
-`npm run test:phase3`. Ini menguji autentikasi, privacy default, isolasi state,
-follow, leaderboard, CSRF dan logout.
+`npm run test:phase3`. Ini menguji autentikasi, upload avatar JPEG, privacy
+default, isolasi state, mutual follow/follow-back, leaderboard, CSRF dan logout.
 
 ---
 

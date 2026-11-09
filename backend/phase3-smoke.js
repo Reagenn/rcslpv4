@@ -191,19 +191,23 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
     result = await request("/api/state", "GET", cookieB);
     assert.equal(result.data.balances.SOL.usdc, 1500, "simulated top-up is isolated to its account");
 
+    const tinyAvatar = "data:image/jpeg;base64,/9j/2Q==";
     result = await request("/api/profile", "GET", cookieA);
     assert.equal(result.data.sharePositions, false, "positions private by default: " + JSON.stringify(result.data));
     assert.equal(result.data.shareNetWorth, false, "net worth private by default");
+    result = await request("/api/profile", "POST", cookieA, {
+      displayName: "Alice Public", avatarUrl: tinyAvatar, sharePositions: false, shareNetWorth: false, showOnLeaderboard: true,
+    });
+    assert.equal(result.response.status, 200, "save profile privacy and uploaded avatar");
+    assert.equal(result.data.avatarUrl, tinyAvatar, "compressed JPEG avatar is accepted and persisted");
+    result = await request("/api/profile", "POST", cookieA, { avatarUrl: "data:image/svg+xml;base64,PHN2Zz4=" });
+    assert.equal(result.response.status, 400, "non-raster avatar uploads are rejected");
     result = await request("/api/profiles/alice", "GET");
     assert.equal(result.response.status, 200, "public profile available");
+    assert.equal(result.data.avatarUrl, tinyAvatar, "uploaded avatar is included in public profile");
     assert(!("positions" in result.data), "private positions omitted");
     assert(!("netWorth" in result.data), "private net worth omitted");
     assert(!("dueDiligence" in result.data), "private desk metadata omitted");
-
-    result = await request("/api/profile", "POST", cookieA, {
-      displayName: "Alice Public", sharePositions: false, shareNetWorth: false, showOnLeaderboard: true,
-    });
-    assert.equal(result.response.status, 200, "save profile privacy");
     result = await request("/api/settings", "POST", cookieA, { settings: { tpSl: { defaultTpPct: 37 }, autoTrading: { source: "UNISWAP_V4", minApr: 42 } } });
     assert.equal(result.response.status, 200, "save account A settings");
     result = await request("/api/settings", "GET", cookieB);
@@ -238,7 +242,15 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
     assert.equal(result.response.status, 200, "follow succeeds");
     result = await request("/api/following", "GET", cookieB);
     assert.equal(result.data.following[0].username, "alice", "following lists public profile");
+    assert.equal(result.data.following[0].followsYou, false, "one-way follows are identified before follow-back");
     assert(!("positions" in result.data.following[0]), "following respects private positions");
+    result = await request("/api/following", "GET", cookieA);
+    assert.equal(result.data.followers[0].username, "bobby", "profile owner can list followers");
+    assert.equal(result.data.followers[0].isFollowing, false, "followers list identifies accounts not yet followed back");
+    result = await request("/api/following", "POST", cookieA, { username: "bobby", action: "follow" });
+    assert.equal(result.response.status, 200, "user can follow back a follower");
+    result = await request("/api/following", "GET", cookieB);
+    assert.equal(result.data.following[0].followsYou, true, "mutual follow relationship is reported");
 
     result = await request("/api/profile", "POST", cookieA, { sharePositions: true });
     assert.equal(result.response.status, 200, "share positions preference saves");
@@ -252,6 +264,7 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
     assert.equal(result.data.simulation, true, "shared net worth labeled simulation");
     assert.equal(typeof result.data.netWorth, "number", "shared net worth is exposed");
     assert.equal(result.data.followers, 1, "follower count updated");
+    assert.equal(result.data.followingCount, 1, "following count updated for mutual follow");
 
     result = await request("/api/reset", "POST", cookieA, {}, "https://attacker.invalid");
     assert.equal(result.response.status, 403, "cross-origin mutation rejected");

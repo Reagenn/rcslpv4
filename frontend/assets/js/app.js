@@ -3481,14 +3481,72 @@ function showAuth(message) {
   $("app").hidden = true;
   if (message) $("authError").textContent = message;
 }
-function publicProfileMarkup(profile, followed) {
+function updateProfileAvatarPreview(source) {
+  const preview = $("profileAvatarPreview");
+  if (source) {
+    preview.src = source;
+    preview.hidden = false;
+  } else {
+    preview.removeAttribute("src");
+    preview.hidden = true;
+  }
+}
+async function compressProfileAvatar(file) {
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Pilih foto JPG, PNG, atau WebP.");
+  if (file.size > 8 * 1024 * 1024) throw new Error("Ukuran foto maksimal 8 MB sebelum dioptimalkan.");
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = objectUrl;
+    if (typeof image.decode === "function") await image.decode();
+    else await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
+    for (const edge of [320, 240, 180]) {
+      const scale = Math.min(1, edge / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Browser tidak dapat memproses foto ini.");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.82, 0.72, 0.62, 0.52]) {
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+        if (Math.ceil(base64.length * 0.75) <= 32 * 1024) return dataUrl;
+      }
+    }
+    throw new Error("Foto tidak dapat dikompres di bawah batas 32 KB. Coba foto lain.");
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+function bindFollowButtons(container) {
+  container.querySelectorAll("[data-follow-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await postJson("/api/following", { username: button.dataset.followUser, action: button.dataset.followAction });
+        await renderSocialRoute();
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.friendly || error.message, true);
+      }
+    });
+  });
+}
+function publicProfileMarkup(profile, followed, followsYou) {
   const positions = (profile.positions || []).map((position) => '<article class="social-item"><h3>' + esc(position.symbol || "LP") + ' · ' + esc(position.chain || "") + '</h3><p>' + esc(position.product || "") + ' · ' + esc(position.status || "") + '</p><p>Entry ' + esc(String(position.entryPrice ?? "—")) + ' · Current ' + esc(String(position.currentPrice ?? "—")) + '</p><p>Nilai ' + fmtMoney(position.positionValue) + ' · PnL ' + fmtMoney(position.netPnl) + '</p></article>').join("");
   const avatar = profile.avatarUrl ? '<img class="social-avatar" src="' + esc(profile.avatarUrl) + '" alt="Avatar ' + esc(profile.displayName) + '" />' : '<div class="social-avatar" aria-hidden="true"></div>';
-  return '<div class="social-banner"></div><div class="social-user">' + avatar + '<div><h1>' + esc(profile.displayName || profile.username) + '</h1><p class="muted">@' + esc(profile.username) + ' · ' + Number(profile.followers || 0) + ' followers</p></div></div>' +
+  const relationship = followsYou && followed ? "Saling follow" : followsYou ? "Akun ini mengikuti kamu" : followed ? "Kamu mengikuti akun ini" : "";
+  const followAction = followed ? "unfollow" : "follow";
+  const followLabel = followed ? "Unfollow" : followsYou ? "Follow balik" : "Follow";
+  return '<div class="social-banner"></div><div class="social-user">' + avatar + '<div><h1>' + esc(profile.displayName || profile.username) + '</h1><p class="muted">@' + esc(profile.username) + ' · ' + Number(profile.followers || 0) + ' followers · ' + Number(profile.followingCount || 0) + ' following</p></div></div>' +
+    (relationship ? '<p class="follow-relationship">' + relationship + '</p>' : "") +
     (profile.discordName ? '<p>Discord: ' + esc(profile.discordName) + '</p>' : "") + (profile.bio ? '<p>' + esc(profile.bio) + '</p>' : "") +
     (profile.netWorth != null ? '<article class="social-item"><strong>Net worth simulasi: ' + fmtMoney(profile.netWorth) + '</strong><p class="muted small">Simulasi, bukan performa atau dana nyata.</p></article>' : "") +
     (profile.positions ? '<h2>Posisi yang dibagikan</h2><p class="muted small">Semua posisi di bawah ini simulasi.</p><div class="social-grid">' + (positions || '<p>Tidak ada posisi.</p>') + '</div>' : '<p class="muted">Posisi tidak dibagikan.</p>') +
-    (currentAccount && currentAccount.username !== profile.username ? '<button id="followProfileBtn" type="button">' + (followed ? "Unfollow" : "Follow") + '</button>' : "");
+    (currentAccount && currentAccount.username !== profile.username ? '<button id="followProfileBtn" type="button" data-follow-user="' + esc(profile.username) + '" data-follow-action="' + followAction + '">' + followLabel + '</button>' : "");
 }
 async function renderSocialRoute() {
   const path = location.pathname;
@@ -3506,8 +3564,14 @@ async function renderSocialRoute() {
   if (path === "/following") {
     if (!currentAccount) return showAuth("Masuk untuk melihat akun yang kamu ikuti.");
     const data = await api("/api/following");
-    const rows = (data.following || []).map((item) => '<article class="social-item"><h3><a href="/u/' + encodeURIComponent(item.username) + '">' + esc(item.displayName || item.username) + '</a></h3><p>@' + esc(item.username) + '</p>' + (item.netWorth != null ? '<p>Net worth simulasi: ' + fmtMoney(item.netWorth) + '</p>' : '<p class="muted">Net worth tidak dibagikan.</p>') + '</article>').join("");
-    content.innerHTML = '<p class="eyebrow">KOMUNITAS</p><h1>Following</h1><div class="social-grid">' + (rows || '<p>Kamu belum mengikuti akun. Kunjungi profil publik untuk follow.</p>') + '</div>';
+    const personCard = (item, relationship, action, label) => {
+      const avatar = item.avatarUrl ? '<img class="social-list-avatar" src="' + esc(item.avatarUrl) + '" alt="" />' : '<span class="social-list-avatar placeholder" aria-hidden="true"></span>';
+      return '<article class="social-item"><div class="social-list-user">' + avatar + '<div><h3><a href="/u/' + encodeURIComponent(item.username) + '">' + esc(item.displayName || item.username) + '</a></h3><p>@' + esc(item.username) + '</p></div></div><p class="follow-relationship">' + relationship + '</p><button type="button" data-follow-user="' + esc(item.username) + '" data-follow-action="' + action + '">' + label + '</button></article>';
+    };
+    const followingRows = (data.following || []).map((item) => personCard(item, item.followsYou ? "Saling follow" : "Belum follow balik", "unfollow", "Unfollow")).join("");
+    const followerRows = (data.followers || []).map((item) => personCard(item, item.isFollowing ? "Saling follow" : "Mengikuti kamu", item.isFollowing ? "unfollow" : "follow", item.isFollowing ? "Unfollow" : "Follow balik")).join("");
+    content.innerHTML = '<p class="eyebrow">KOMUNITAS</p><h1>Following &amp; Followers</h1><h2>Mengikuti (' + (data.following || []).length + ')</h2><div class="social-grid">' + (followingRows || '<p class="muted">Kamu belum mengikuti akun. Kunjungi profil publik untuk follow.</p>') + '</div><h2>Followers (' + (data.followers || []).length + ')</h2><div class="social-grid">' + (followerRows || '<p class="muted">Belum ada akun yang mengikuti kamu.</p>') + '</div>';
+    bindFollowButtons(content);
     return;
   }
   const match = path.match(/^\/u\/([^/]+)\/?$/);
@@ -3515,23 +3579,18 @@ async function renderSocialRoute() {
     const username = decodeURIComponent(match[1]);
     const profile = await api("/api/profiles/" + encodeURIComponent(username));
     let followed = false;
+    let followsYou = false;
     if (currentAccount) {
       const followData = await api("/api/following");
       followed = (followData.following || []).some((item) => item.username === profile.username);
+      followsYou = (followData.followers || []).some((item) => item.username === profile.username);
     }
-    content.innerHTML = publicProfileMarkup(profile, followed);
+    content.innerHTML = publicProfileMarkup(profile, followed, followsYou);
     if (profile.bannerUrl) {
       const banner = content.querySelector(".social-banner");
       banner.style.backgroundImage = "url('" + encodeURI(new URL(profile.bannerUrl).href).replace(/'/g, "%27") + "')";
     }
-    const followButton = $("followProfileBtn");
-    if (followButton) followButton.addEventListener("click", async () => {
-      followButton.disabled = true;
-      try {
-        await postJson("/api/following", { username: profile.username, action: followed ? "unfollow" : "follow" });
-        await renderSocialRoute();
-      } catch (error) { followButton.disabled = false; showToast(error.friendly || error.message, true); }
-    });
+    bindFollowButtons(content);
   }
 }
 async function loadProfileEditor() {
@@ -3539,7 +3598,12 @@ async function loadProfileEditor() {
   $("profileDisplayName").value = profile.displayName || "";
   $("profileDiscord").value = profile.discordName || "";
   $("profileBio").value = profile.bio || "";
-  $("profileAvatar").value = profile.avatarUrl || "";
+  const avatarUrl = profile.avatarUrl || "";
+  const uploadedAvatar = avatarUrl.startsWith("data:image/jpeg;base64,");
+  $("profileAvatarData").value = uploadedAvatar ? avatarUrl : "";
+  $("profileAvatar").value = uploadedAvatar ? "" : avatarUrl;
+  $("profileAvatarFile").value = "";
+  updateProfileAvatarPreview(avatarUrl);
   $("profileBanner").value = profile.bannerUrl || "";
   $("sharePositions").checked = profile.sharePositions === true;
   $("shareNetWorth").checked = profile.shareNetWorth === true;
@@ -3617,11 +3681,37 @@ function bindAccountUi() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !$("profileEditor").hidden) closeProfileEditor();
   });
+  $("profileAvatarFile").addEventListener("change", async () => {
+    const file = $("profileAvatarFile").files && $("profileAvatarFile").files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressProfileAvatar(file);
+      $("profileAvatarData").value = dataUrl;
+      $("profileAvatar").value = "";
+      updateProfileAvatarPreview(dataUrl);
+      $("profileMessage").textContent = "Foto siap. Simpan profil untuk mempublikasikannya.";
+    } catch (error) {
+      $("profileMessage").textContent = error.message || "Foto tidak dapat diproses.";
+    } finally {
+      $("profileAvatarFile").value = "";
+    }
+  });
+  $("profileAvatar").addEventListener("input", () => {
+    $("profileAvatarData").value = "";
+    updateProfileAvatarPreview($("profileAvatar").value.trim());
+  });
+  $("clearProfileAvatar").addEventListener("click", () => {
+    $("profileAvatarData").value = "";
+    $("profileAvatar").value = "";
+    $("profileAvatarFile").value = "";
+    updateProfileAvatarPreview("");
+    $("profileMessage").textContent = "Foto dihapus dari draft. Simpan profil untuk menerapkan perubahan.";
+  });
   $("profileForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = {
       displayName: $("profileDisplayName").value, discordName: $("profileDiscord").value, bio: $("profileBio").value,
-      avatarUrl: $("profileAvatar").value, bannerUrl: $("profileBanner").value,
+      avatarUrl: $("profileAvatarData").value || $("profileAvatar").value, bannerUrl: $("profileBanner").value,
       sharePositions: $("sharePositions").checked, shareNetWorth: $("shareNetWorth").checked,
       showOnLeaderboard: $("showOnLeaderboard").checked,
     };

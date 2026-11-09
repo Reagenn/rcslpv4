@@ -1212,6 +1212,14 @@ function validHttpsUrl(value, max) {
     return parsed.protocol === "https:" && !!parsed.hostname && !parsed.username && !parsed.password;
   } catch (_) { return false; }
 }
+function validAvatarValue(value) {
+  if (validHttpsUrl(value, 500)) return true;
+  if (typeof value !== "string" || value.length > 45 * 1024) return false;
+  const match = value.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) return false;
+  const bytes = Buffer.from(match[1], "base64");
+  return bytes.length >= 4 && bytes.length <= 32 * 1024 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+}
 function defaultProfile(username, displayName) {
   return {
     displayName: displayName || username,
@@ -1234,6 +1242,7 @@ function publicUserFields(user) {
     avatarUrl: p.avatarUrl,
     bannerUrl: p.bannerUrl,
     followers: Object.values(readUsersStore().users).filter((other) => (other.following || []).includes(user.id)).length,
+    followingCount: (user.following || []).length,
   };
 }
 function deskFileFor(user) {
@@ -1275,8 +1284,11 @@ function profileValidation(body) {
   for (const [key, max] of Object.entries(limits)) {
     if (Object.prototype.hasOwnProperty.call(body, key) && !validText(body[key], max, key !== "displayName")) return key + " is invalid or too long.";
   }
-  for (const key of ["avatarUrl", "bannerUrl"]) {
-    if (Object.prototype.hasOwnProperty.call(body, key) && !validHttpsUrl(body[key], key === "avatarUrl" ? 500 : 1000)) return key + " must be an HTTPS URL within the length limit.";
+  if (Object.prototype.hasOwnProperty.call(body, "avatarUrl") && !validAvatarValue(body.avatarUrl)) {
+    return "avatarUrl must be an HTTPS URL or a compressed JPEG image within the size limit.";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "bannerUrl") && !validHttpsUrl(body.bannerUrl, 1000)) {
+    return "bannerUrl must be an HTTPS URL within the length limit.";
   }
   for (const key of ["sharePositions", "shareNetWorth", "showOnLeaderboard"]) {
     if (Object.prototype.hasOwnProperty.call(body, key) && typeof body[key] !== "boolean") return key + " must be boolean.";
@@ -1743,8 +1755,14 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, { ...publicUserFields(user), ...profile });
     }
     if (pathname === "/api/following" && req.method === "GET") {
-      const followed = (user.following || []).map((id) => Object.values(store.users).find((other) => other.id === id)).filter(Boolean);
-      return sendJson(res, 200, { following: followed.map(publicDeskData) });
+      const users = Object.values(store.users);
+      const followingIds = new Set(user.following || []);
+      const followed = (user.following || []).map((id) => users.find((other) => other.id === id)).filter(Boolean);
+      const followers = users.filter((other) => (other.following || []).includes(user.id));
+      return sendJson(res, 200, {
+        following: followed.map((other) => ({ ...publicDeskData(other), followsYou: (other.following || []).includes(user.id) })),
+        followers: followers.map((other) => ({ ...publicDeskData(other), isFollowing: followingIds.has(other.id) })),
+      });
     }
     if (pathname === "/api/following" && req.method === "POST") {
       const body = await readBody(req);
