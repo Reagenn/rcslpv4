@@ -1557,16 +1557,15 @@ function renderHolding() {
     "<div><span>Fee + reward belum diklaim</span><strong>" +
     fmtMoney(fees) +
     "</strong></div>";
-  // Strip statistik kolom (a): nilai besar + persen vs total hold benchmark.
-  const stripEl = $("stripNetPnl");
+  const monthPnl = deskState.monthlyPositionPnl || { pnl: 0, positions: 0 };
+  const stripEl = $("stripMonthPnl");
   if (stripEl) {
-    const holdSum = sum((p) => p.holdValue);
-    const pct = holdSum > 0 ? round2Client((netVsHolding / holdSum) * 100) : 0;
-    stripEl.textContent = fmtMoney(netVsHolding);
-    stripEl.className = "num " + (netVsHolding >= 0 ? "pos" : "neg");
-    const pctEl = $("stripNetPnlPct");
-    pctEl.textContent = (pct >= 0 ? "+" : "") + pct.toFixed(2) + "% vs holding";
-    pctEl.className = "strip-pct " + (pct >= 0 ? "pos" : "neg");
+    const pnl = Number(monthPnl.pnl) || 0;
+    stripEl.textContent = fmtMoney(pnl);
+    stripEl.className = "num " + (pnl >= 0 ? "pos" : "neg");
+    const positionsEl = $("stripMonthPnlPositions");
+    positionsEl.textContent = (Number(monthPnl.positions) || 0) + " posisi";
+    positionsEl.className = "strip-pct " + (pnl >= 0 ? "pos" : "neg");
   }
   const firstDlmm = opens.find((p) => p.product === "DLMM") || opens[0];
   const bp = $("binsPreview");

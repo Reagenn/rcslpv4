@@ -20,6 +20,8 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
   const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
   const frontendHtml = fs.readFileSync(path.join(root, "frontend", "index.html"), "utf8");
   const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
+  assert(serverScript.includes("monthlyPositionPnl()"), "desk state exposes month-to-date position PnL");
+  assert(frontendHtml.includes('id="stripMonthPnl"'), "dashboard shows month-to-date position PnL");
   assert(frontendHtml.includes('id="profileAvatar" type="url"'), "profile avatar URL input markup is valid");
   assert(!frontendHtml.includes('type</label>="url"'), "profile avatar input does not leak malformed markup into the page");
   assert(serverScript.includes("api.geckoterminal.com"), "EVM APR scanner uses GeckoTerminal REST API");
@@ -235,6 +237,9 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
     assert.equal(result.data.positions.length, 0, "account B cannot see account A positions");
     result = await request("/api/state", "GET", cookieA);
     assert.equal(result.data.positions.length, 1, "account A position persists independently");
+    assert.equal(result.data.monthlyPositionPnl.month, new Date().toISOString().slice(0, 7), "position PnL uses the current calendar month");
+    assert.equal(result.data.monthlyPositionPnl.pnl, 0, "new open position starts with zero monthly PnL");
+    assert.equal(result.data.monthlyPositionPnl.positions, 1, "monthly PnL identifies current-month open positions");
 
     result = await request("/api/leaderboard", "GET");
     const rankedAlice = result.data.leaderboard.find((item) => item.username === "alice");

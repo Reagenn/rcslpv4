@@ -333,6 +333,34 @@ function clampScore(n) {
 
 /* ---------------- Monthly profit computation ---------------- */
 
+function monthlyPositionPnl(month) {
+  const period = month || monthKey();
+  const realizedRows = state.pnlLedger.filter((entry) =>
+    (entry.date || "").startsWith(period) && ["close", "rebalance"].includes(entry.kind),
+  );
+  const claimedFees = state.feeClaimLog
+    .filter((entry) => (entry.date || "").startsWith(period))
+    .reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
+  const openPositions = state.positions.filter((position) =>
+    position.status === "open" && (position.createdAt || "").startsWith(period),
+  );
+  const openPnl = openPositions.reduce((sum, position) => {
+    const price = Number(position.currentPrice ?? position.entryPrice) || 0;
+    const value = valuePosition(position, price).value;
+    return sum + value + (Number(position.fees) || 0) + (Number(position.rewards) || 0) - (Number(position.amount) || 0);
+  }, 0);
+  const positionIds = new Set([
+    ...realizedRows.map((entry) => entry.ref).filter(Boolean),
+    ...state.feeClaimLog.filter((entry) => (entry.date || "").startsWith(period)).map((entry) => entry.ref).filter(Boolean),
+    ...openPositions.map((position) => position.id),
+  ]);
+  return {
+    month: period,
+    pnl: round2(realizedRows.reduce((sum, entry) => sum + (Number(entry.delta) || 0), 0) + claimedFees + openPnl),
+    positions: positionIds.size,
+  };
+}
+
 function monthlySummary(month) {
   const [y, m] = month.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -1785,6 +1813,7 @@ async function handleRequest(req, res) {
         positions: state.positions.map(positionPublic),
         transactions: state.transactions,
         pnlLedger: state.pnlLedger,
+        monthlyPositionPnl: monthlyPositionPnl(),
         dueDiligence: state.dueDiligence,
         leaders: state.leaders,
         claimedFeesTotal: round2(state.claimedFeesTotal),

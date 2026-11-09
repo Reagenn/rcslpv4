@@ -288,11 +288,14 @@ harga. Frontend: `renderPositions()`, `renderHolding()` (preview bins),
 `handlePositionAction()`. Backend: `positionPublic()`, `makeBins()`,
 `POST /api/lp/claim|close|rebalance`, `closePositionInternal()`.
 
-### 6. Desk Net PnL vs Holding
-Nilai LP + fee/reward dibandingkan benchmark memegang aset sesuai bobot
-distribusi posisi; selisih negatif ≈ impermanent loss. Frontend:
-`renderHolding()`. Backend: `positionPublic()` menghitung `holdValue`
-(dari `distributionWeights()`), `il`, dan `netVsHolding`.
+### 6. KPI PnL posisi bulan ini
+KPI dashboard menampilkan PnL realisasi close/rebalance dan fee yang diklaim
+pada bulan berjalan, ditambah PnL saat ini posisi terbuka yang dibuka bulan
+ini. Posisi terbuka dari bulan sebelumnya tidak masuk komponen berjalan
+karena tidak ada snapshot awal bulan untuk menghitung perubahannya.
+Benchmark hold dan impermanent loss tetap tersedia pada setiap kartu posisi.
+Frontend: `renderHolding()`. Backend: `monthlyPositionPnl()` dan
+`positionPublic()`.
 
 ### 7. Monthly Profit + ledger PnL
 Kalender harian (PnL + jumlah posisi), navigasi bulan + Today, dan 8
