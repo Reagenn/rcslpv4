@@ -18,7 +18,10 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
 (async () => {
   const root = process.cwd();
   const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
+  const frontendHtml = fs.readFileSync(path.join(root, "frontend", "index.html"), "utf8");
   const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
+  assert(frontendHtml.includes('id="profileAvatar" type="url"'), "profile avatar URL input markup is valid");
+  assert(!frontendHtml.includes('type</label>="url"'), "profile avatar input does not leak malformed markup into the page");
   assert(serverScript.includes("api.geckoterminal.com"), "EVM APR scanner uses GeckoTerminal REST API");
   assert(serverScript.includes("normalizeMeteoraPools"), "Solana APR scanner uses Meteora pool fee data");
   assert(serverScript.includes("ROBINHOOD: 4663"), "Robinhood token security uses its supported GoPlus chain ID");
