@@ -23,6 +23,7 @@ const {
 } = require("./uniswap-v4");
 const { migrateLegacyPositionRisk, positionExitReason } = require("./position-risk");
 const { autoTradingRiskReason } = require("./auto-trading-risk");
+const { pairPriceUsdForToken } = require("./dex-pricing");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -317,14 +318,21 @@ async function fetchJson(u, timeoutMs) {
   }
 }
 
-function pickBestPair(pairs) {
-  if (!Array.isArray(pairs) || !pairs.length) return null;
-  return pairs.slice().sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
-}
 
 function chainFromPair(pair) {
   if (!pair) return null;
   return DEX_CHAIN_MAP[(pair.chainId || "").toLowerCase()] || null;
+}
+
+function pickBestPairForToken(pairs, address, chain) {
+  if (!Array.isArray(pairs) || !pairs.length) return null;
+  const ranked = pairs.slice().sort((a, b) => (Number(b.liquidity?.usd) || 0) - (Number(a.liquidity?.usd) || 0));
+  for (const pair of ranked) {
+    const pairChain = chain || chainFromPair(pair);
+    const priceUsd = pairPriceUsdForToken(pair, address, pairChain);
+    if (priceUsd != null && priceUsd > 0) return { pair, priceUsd };
+  }
+  return null;
 }
 
 function clampScore(n) {
@@ -501,11 +509,14 @@ async function discoverPools(address) {
   const dexPoolsAll = pairs
     .map((pair) => {
       const chain = chainFromPair(pair);
-      // Token yang dicari bisa berada di sisi quote (mis. X/USDC yang dicari X
-      // adalah base; USDC yang dicari adalah quote). Pilih sisi yang cocok.
-      const quoteIsTarget = pair.quoteToken && pair.quoteToken.address && pair.quoteToken.address.toLowerCase() === String(address).toLowerCase();
-      const targetTok = quoteIsTarget ? pair.quoteToken : pair.baseToken;
-      const otherTok = quoteIsTarget ? pair.baseToken : pair.quoteToken;
+      const targetKey = tokenAddressKey(chain, address);
+      const baseIsTarget = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === targetKey;
+      const quoteIsTarget = tokenAddressKey(chain, pair.quoteToken && pair.quoteToken.address) === targetKey;
+      if (!baseIsTarget && !quoteIsTarget) return null;
+      const price = pairPriceUsdForToken(pair, address, chain);
+      if (price == null) return null;
+      const targetTok = baseIsTarget ? pair.baseToken : pair.quoteToken;
+      const otherTok = baseIsTarget ? pair.quoteToken : pair.baseToken;
       return {
         source: "DexScreener",
         chain: chain || (pair.chainId || "").toUpperCase(),
@@ -516,18 +527,19 @@ async function discoverPools(address) {
         baseSymbol: (targetTok && targetTok.symbol) || "?",
         quoteSymbol: (otherTok && otherTok.symbol) || "?",
         tokenAddress: (targetTok && targetTok.address) || address,
-        price: roundPrice(pair.priceUsd),
+        price: roundPrice(price),
         feePct: null, // DexScreener tidak mempublikasikan fee tier -> kosong, tidak ditebak
         fees24h: null,
         binStep: null,
         tvl: round2((pair.liquidity && pair.liquidity.usd) || 0),
         liquidity: round2((pair.liquidity && pair.liquidity.usd) || 0),
         volume24h: round2((pair.volume && pair.volume.h24) || 0),
-        marketCap: pair.marketCap || pair.fdv || null,
+        marketCap: baseIsTarget ? (pair.marketCap || pair.fdv || null) : null,
         pairUrl: pair.url || "",
         createdAt: pair.pairCreatedAt || null,
       };
     })
+    .filter(Boolean)
     .sort((a, b) => b.tvl - a.tvl);
   // Filter chain dominan (menyamakan perilaku hosted yang teramati): hanya
   // pool dari chain yang didukung, dan hanya chain dengan total likuiditas
@@ -562,16 +574,24 @@ async function discoverPools(address) {
             if (raw && raw.address) return normalizeMeteoraPool(raw, address);
             // Lookup datapi gagal -> tampilkan data DexScreener apa adanya;
             // fee/bin step kosong (tidak ditebak).
+            const chain = chainFromPair(pr);
+            const targetKey = tokenAddressKey(chain, address);
+            const baseIsTarget = tokenAddressKey(chain, pr.baseToken && pr.baseToken.address) === targetKey;
+            const quoteIsTarget = tokenAddressKey(chain, pr.quoteToken && pr.quoteToken.address) === targetKey;
+            const price = pairPriceUsdForToken(pr, address, chain);
+            if ((!baseIsTarget && !quoteIsTarget) || price == null) return null;
+            const target = baseIsTarget ? pr.baseToken : pr.quoteToken;
+            const other = baseIsTarget ? pr.quoteToken : pr.baseToken;
             return {
               source: "Meteora DLMM",
               chain: "SOL",
               protocol: "DLMM",
               poolAddress: pr.pairAddress,
               name: ((pr.baseToken && pr.baseToken.symbol) || "?") + "/" + ((pr.quoteToken && pr.quoteToken.symbol) || "?"),
-              baseSymbol: (pr.baseToken && pr.baseToken.symbol) || "?",
-              quoteSymbol: (pr.quoteToken && pr.quoteToken.symbol) || "?",
+              baseSymbol: (target && target.symbol) || "?",
+              quoteSymbol: (other && other.symbol) || "?",
               tokenAddress: address,
-              price: roundPrice(pr.priceUsd),
+              price: roundPrice(price),
               baseFeePct: null,
               dynamicFeePct: null,
               feePct: null,
@@ -582,12 +602,13 @@ async function discoverPools(address) {
               fees24h: null,
               feeTvl24hPct: null,
               aprPct: null,
-              marketCap: pr.marketCap || pr.fdv || null,
+              marketCap: baseIsTarget ? (pr.marketCap || pr.fdv || null) : null,
               holders: null,
               createdAt: pr.pairCreatedAt || null,
               pairUrl: pr.url || "",
             };
           })
+          .filter(Boolean)
           .sort((a, b) => b.tvl - a.tvl)
           .slice(0, 25);
       } else {
@@ -598,25 +619,29 @@ async function discoverPools(address) {
       notes.push("Meteora DLMM Data API tidak dapat dihubungi saat discovery.");
     }
   }
-  const best = pickBestPair(pairs);
-  const token =
-    best ?
-      {
-        name: (best.baseToken && best.baseToken.name) || "Unknown",
-        symbol: (best.baseToken && best.baseToken.symbol) || "???",
-        price: roundPrice(best.priceUsd),
-        marketCap: best.marketCap || best.fdv || null,
-        change24h: best.priceChange ? Number(best.priceChange.h24) || 0 : 0,
-      }
-    : meteoraPools.length ?
-      {
-        name: meteoraPools[0].baseSymbol,
-        symbol: meteoraPools[0].baseSymbol,
-        price: meteoraPools[0].price,
-        marketCap: meteoraPools[0].marketCap,
-        change24h: 0,
-      }
-    : null;
+  const best = pickBestPairForToken(pairs, address);
+  let token = null;
+  if (best) {
+    const pair = best.pair;
+    const chain = chainFromPair(pair);
+    const targetIsBase = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === tokenAddressKey(chain, address);
+    const target = targetIsBase ? pair.baseToken : pair.quoteToken;
+    token = {
+      name: (target && target.name) || "Unknown",
+      symbol: (target && target.symbol) || "???",
+      price: roundPrice(best.priceUsd),
+      marketCap: targetIsBase ? (pair.marketCap || pair.fdv || null) : null,
+      change24h: targetIsBase && pair.priceChange ? Number(pair.priceChange.h24) || 0 : 0,
+    };
+  } else if (meteoraPools.length) {
+    token = {
+      name: meteoraPools[0].baseSymbol,
+      symbol: meteoraPools[0].baseSymbol,
+      price: meteoraPools[0].price,
+      marketCap: meteoraPools[0].marketCap,
+      change24h: 0,
+    };
+  }
   if (!meteoraPools.length && looksLikeSolanaMint(address)) {
     notes.push("Tidak ada pool Meteora DLMM untuk mint ini (jumlah Meteora = 0).");
   }
@@ -862,12 +887,14 @@ async function runCandidateAgent() {
         return tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ||
           tokenAddressKey(chain, pair.quoteToken && pair.quoteToken.address) === candidateKey;
       });
-      const pair = pickBestPair(tokenPairs);
-      if (!pair) continue;
+      const selected = pickBestPairForToken(tokenPairs, candidate.address, chain);
+      if (!selected) continue;
+      const { pair, priceUsd } = selected;
       const token = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ? pair.baseToken : pair.quoteToken;
       enriched.push({
         ...candidate,
         pair,
+        priceUsd,
         poolCount: tokenPairs.length,
         name: token && token.name || "Unknown",
         symbol: token && token.symbol || "???",
@@ -1097,7 +1124,7 @@ async function runCandidateAgent() {
       price_change_h1: pc.h1 || 0,
       price_change_h6: pc.h6 || 0,
       price_change_m5: pc.m5 || 0,
-      price_usd: roundPrice(e.pair.priceUsd),
+      price_usd: roundPrice(e.priceUsd),
       primary_pool_address: e.pair.pairAddress || null,
       rank: null,
       rationale,
@@ -1509,9 +1536,9 @@ async function fetchLivePrice(address, fallback, chain) {
     const data = await fetchJson("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(address), 8000);
     const pairs = Array.isArray(data.pairs) ? data.pairs : [];
     const chainPairs = chain ? pairs.filter((pair) => chainFromPair(pair) === chain) : pairs;
-    const pair = pickBestPair(chainPairs);
-    if (!pair || !pair.priceUsd) return fallback;
-    return roundPrice(pair.priceUsd);
+    const selected = pickBestPairForToken(chainPairs, address, chain);
+    if (!selected) return fallback;
+    return roundPrice(selected.priceUsd);
   } catch (_) {
     return fallback;
   }
@@ -2204,17 +2231,21 @@ async function handleRequest(req, res) {
           const data = await fetchJson("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(leader.favoriteToken), 10000);
           const pairs = (data.pairs || []).filter((p) => chainFromPair(p));
           const onChain = leader.chain ? pairs.filter((p) => chainFromPair(p) === leader.chain) : [];
-          const best = pickBestPair(onChain.length ? onChain : pairs);
-          if (best) {
+          const selected = pickBestPairForToken(onChain.length ? onChain : pairs, leader.favoriteToken);
+          if (selected) {
+            const pair = selected.pair;
+            const chain = chainFromPair(pair);
+            const targetIsBase = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === tokenAddressKey(chain, leader.favoriteToken);
+            const token = targetIsBase ? pair.baseToken : pair.quoteToken;
             target = {
-              address: (best.baseToken && best.baseToken.address) || leader.favoriteToken,
-              symbol: (best.baseToken && best.baseToken.symbol) || "TOKEN",
-              name: (best.baseToken && best.baseToken.name) || "Unknown Token",
-              price: roundPrice(best.priceUsd),
-              chain: chainFromPair(best),
-              pair: ((best.baseToken && best.baseToken.symbol) || "?") + "/" + ((best.quoteToken && best.quoteToken.symbol) || "?"),
-              pairUrl: best.url || "",
-              change24h: best.priceChange ? Number(best.priceChange.h24) || 0 : 0,
+              address: leader.favoriteToken,
+              symbol: (token && token.symbol) || "TOKEN",
+              name: (token && token.name) || "Unknown Token",
+              price: roundPrice(selected.priceUsd),
+              chain,
+              pair: ((pair.baseToken && pair.baseToken.symbol) || "?") + "/" + ((pair.quoteToken && pair.quoteToken.symbol) || "?"),
+              pairUrl: pair.url || "",
+              change24h: targetIsBase && pair.priceChange ? Number(pair.priceChange.h24) || 0 : 0,
             };
           }
         } catch (_) {

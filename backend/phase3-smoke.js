@@ -14,9 +14,22 @@ const {
 } = require("./src/uniswap-v4");
 const { migrateLegacyPositionRisk, positionExitReason } = require("./src/position-risk");
 const { autoTradingRiskReason } = require("./src/auto-trading-risk");
+const { pairPriceUsdForToken } = require("./src/dex-pricing");
 
 (async () => {
   const root = process.cwd();
+  const wethAddress = "0x1111111111111111111111111111111111111111";
+  const aiAddress = "0x2222222222222222222222222222222222222222";
+  const aiWethPair = {
+    baseToken: { address: aiAddress },
+    quoteToken: { address: wethAddress },
+    priceUsd: "0.02833",
+    priceNative: "0.00001336",
+  };
+  assert.equal(pairPriceUsdForToken(aiWethPair, aiAddress, "ROBINHOOD"), 0.02833, "base-side token uses DexScreener USD price");
+  assert(Math.abs(pairPriceUsdForToken(aiWethPair, wethAddress, "ROBINHOOD") - (0.02833 / 0.00001336)) < 1e-9, "quote-side token USD price is derived from priceNative");
+  assert.equal(pairPriceUsdForToken(aiWethPair, "0x3333333333333333333333333333333333333333", "ROBINHOOD"), null, "unrelated token address is rejected");
+  assert.equal(pairPriceUsdForToken({ ...aiWethPair, priceNative: undefined }, wethAddress, "ROBINHOOD"), null, "quote-side price is rejected without priceNative");
   const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
   const frontendHtml = fs.readFileSync(path.join(root, "frontend", "index.html"), "utf8");
   const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
