@@ -17,17 +17,17 @@
     <section id="authScreen" class="account-screen" hidden>
       <div class="account-card">
         <p class="eyebrow">LP DESK ACCOUNT</p>
-        <h1 id="authTitle">Masuk ke desk</h1>
-        <p class="muted">Setiap akun memiliki desk simulasi privat. Buat akun untuk melanjutkan.</p>
-        <form id="authForm">
-          <label>Username <input id="authUsername" required minlength="3" maxlength="24" autocomplete="username" /></label>
-          <label id="displayNameField" hidden>Nama tampilan <input id="authDisplayName" maxlength="40" autocomplete="name" /></label>
-          <label>Password <input id="authPassword" type="password" required minlength="10" maxlength="128" autocomplete="current-password" /></label>
-          <button id="authSubmit" class="primary" type="submit">Masuk</button>
-        </form>
-        <p id="authError" class="form-error" role="status"></p>
-        <button id="authModeToggle" class="linkish" type="button">Belum punya akun? Daftar</button>
-        <p class="muted small">Gunakan password unik. Password disimpan sebagai hash di server lokal ini.</p>
+        <h1 id="authTitle">Masuk atau daftar dengan Google</h1>
+        <p class="muted">Gunakan akun Google untuk membuka desk simulasi privat. Pengguna baru otomatis mendapat akun.</p>
+        <div id="googleSignInButton" aria-label="Masuk dengan Google"></div>
+        <p id="authError" class="form-error" role="status" aria-live="polite"></p>
+        <details class="legacy-account-link">
+          <summary>Punya akun LP Desk lama? Tautkan desk lama</summary>
+          <p class="muted small">Jika ingin mempertahankan desk lama, lakukan ini sebelum masuk Google pertama kali: pilih username dan password lama, lalu tekan tombol Google. Kredensial lama hanya dipakai sekali untuk membuktikan kepemilikan; desk dan profil lama tetap terhubung.</p>
+          <label>Username lama <input id="legacyUsername" minlength="3" maxlength="24" autocomplete="username" /></label>
+          <label>Password lama <input id="legacyPassword" type="password" maxlength="128" autocomplete="current-password" /></label>
+        </details>
+        <p class="muted small">Autentikasi Google diverifikasi oleh server. Password Google tidak pernah diminta atau disimpan oleh LP Desk.</p>
       </div>
     </section>
     <nav id="accountBar" class="account-bar" aria-label="Navigasi akun" hidden>
@@ -1085,6 +1085,7 @@
         </form>
       </div>
     </section>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="/assets/js/app.js"></script>
   </body>
 </html>

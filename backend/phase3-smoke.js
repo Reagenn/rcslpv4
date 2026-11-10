@@ -15,9 +15,24 @@ const {
 const { migrateLegacyPositionRisk, positionExitReason } = require("./src/position-risk");
 const { autoTradingRiskReason } = require("./src/auto-trading-risk");
 const { pairPriceUsdForToken } = require("./src/dex-pricing");
+const { verifyGoogleIdToken } = require("./src/google-auth");
 
 (async () => {
   const root = process.cwd();
+  const validGoogleClaims = {
+    aud: "test-google-client-id",
+    iss: "https://accounts.google.com",
+    sub: "google-subject-123456",
+    email: "alice@example.com",
+    email_verified: "true",
+    exp: "2000000000",
+    name: "Alice Example",
+  };
+  const fakeGoogleFetch = async () => ({ ok: true, json: async () => validGoogleClaims });
+  assert.deepEqual(await verifyGoogleIdToken("a".repeat(32), "test-google-client-id", fakeGoogleFetch, 1900000000000), {
+    sub: validGoogleClaims.sub, email: "alice@example.com", name: "Alice Example",
+  }, "verified Google identity claims are normalized");
+  await assert.rejects(verifyGoogleIdToken("a".repeat(32), "other-client-id", fakeGoogleFetch, 1900000000000), /Invalid Google credential/, "Google audience mismatch is rejected");
   const wethAddress = "0x1111111111111111111111111111111111111111";
   const aiAddress = "0x2222222222222222222222222222222222222222";
   const aiWethPair = {
@@ -42,6 +57,9 @@ const { pairPriceUsdForToken } = require("./src/dex-pricing");
   assert(serverScript.includes("ROBINHOOD: 4663"), "Robinhood token security uses its supported GoPlus chain ID");
   assert(serverScript.includes("/api/pools/apr"), "APR scanner has a protocol-neutral API route");
   assert(serverScript.includes("pairs.filter((pair) => chainFromPair(pair) === chain)"), "live token prices are filtered to the position chain");
+  assert(serverScript.includes("/api/auth/google") && serverScript.includes("verifyGoogleIdToken"), "Google ID tokens are verified on the backend");
+  assert(frontendHtml.includes("accounts.google.com/gsi/client") && frontendHtml.includes("id=\"googleSignInButton\""), "auth screen offers Google Sign-In");
+  assert(!frontendHtml.includes('id="authPassword"'), "password login form is removed");
   assert(serverScript.includes("byChainAddress"), "positions sharing an address on different chains are repriced separately");
   assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "APR scanner does not use a Subgraph URL");
   assert(UNISWAP_V4_NETWORKS.some((network) => network.chain === "ROBINHOOD"), "Robinhood Chain v4 pools are included");
@@ -140,9 +158,28 @@ const { pairPriceUsdForToken } = require("./src/dex-pricing");
     fs.mkdirSync(path.join(temp, "backend", "src"), { recursive: true });
     fs.cpSync(path.join(root, "backend", "src"), path.join(temp, "backend", "src"), { recursive: true });
     fs.cpSync(path.join(root, "frontend"), path.join(temp, "frontend"), { recursive: true });
+    const sessionTokenA = "phase3-session-alice";
+    const sessionTokenB = "phase3-session-bobby";
+    const testUser = (id, username, googleSub) => ({
+      id, username, googleSub, googleEmail: username + "@example.com",
+      profile: { displayName: username, discordName: "", bio: "", avatarUrl: "", bannerUrl: "", sharePositions: false, shareNetWorth: false, showOnLeaderboard: false },
+      following: [], createdAt: new Date().toISOString(),
+    });
+    const usersStore = {
+      version: 1, legacyClaimed: true,
+      users: { alice: testUser("user-alice", "alice", "google-sub-alice"), bobby: testUser("user-bobby", "bobby", "google-sub-bobby") },
+      sessions: {
+        [crypto.createHash("sha256").update(sessionTokenA).digest("hex")]: { userId: "user-alice", expiresAt: Date.now() + 60000 },
+        [crypto.createHash("sha256").update(sessionTokenB).digest("hex")]: { userId: "user-bobby", expiresAt: Date.now() + 60000 },
+      },
+    };
+    fs.mkdirSync(path.join(temp, "backend", "data"), { recursive: true });
+    fs.writeFileSync(path.join(temp, "backend", "data", "users.json"), JSON.stringify(usersStore));
+    const cookieA = "lpdesk_session=" + sessionTokenA;
+    const cookieB = "lpdesk_session=" + sessionTokenB;
     child = spawn(process.execPath, [path.join(temp, "backend", "src", "server.js")], {
       cwd: temp,
-      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
+      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), GOOGLE_CLIENT_ID: "" },
       stdio: "ignore",
     });
     const request = async (pathname, method, cookie, body, origin) => {
@@ -189,13 +226,14 @@ const { pairPriceUsdForToken } = require("./src/dex-pricing");
     result = await request("/api/auth/me");
     assert.equal(result.data.user, null, "anonymous session response");
 
-    result = await request("/api/auth/register", "POST", null, { username: "alice", password: "phase3-password-a", displayName: "Alice" });
-    assert.equal(result.response.status, 201, "register first account");
-    const cookieA = result.response.headers.get("set-cookie").split(";")[0];
-
-    result = await request("/api/auth/register", "POST", null, { username: "bobby", password: "phase3-password-b" });
-    assert.equal(result.response.status, 201, "register second account");
-    const cookieB = result.response.headers.get("set-cookie").split(";")[0];
+    result = await request("/api/auth/config");
+    assert.equal(result.data.googleClientId, "", "Google client ID is not exposed when unconfigured");
+    result = await request("/api/auth/google", "POST", null, { credential: "test-credential" });
+    assert.equal(result.response.status, 503, "Google authentication is disabled until a client ID is configured");
+    result = await request("/api/auth/register", "POST", cookieA, { username: "alice", password: "phase3-password-a" });
+    assert.equal(result.response.status, 404, "password registration endpoint is removed");
+    result = await request("/api/auth/login", "POST", cookieA, { username: "alice", password: "phase3-password-a" });
+    assert.equal(result.response.status, 404, "password login endpoint is removed");
     result = await request("/api/auth/me", "GET", cookieA);
     assert.equal(result.data.user.username, "alice", "first session is valid");
     result = await request("/api/balance/fund", "POST", cookieA, { chain: "SOL", amount: 125.5 });
@@ -293,10 +331,10 @@ const { pairPriceUsdForToken } = require("./src/dex-pricing");
     assert.equal(result.response.status, 200, "logout succeeds");
     result = await request("/api/auth/me", "GET", cookieA);
     assert.equal(result.data.user, null, "logged out session revoked");
-    result = await request("/api/auth/login", "POST", null, { username: "alice", password: "wrong-password" });
-    assert.equal(result.response.status, 401, "invalid password rejected");
+    result = await request("/api/auth/login", "POST", cookieB, { username: "alice", password: "wrong-password" });
+    assert.equal(result.response.status, 404, "legacy password login stays disabled after logout");
 
-    console.log("Smoke tests passed: USD-based TP/SL, legacy migration, chain-scoped live prices, LP PnL vs hold metrics, APR normalization, auth and account isolation.");
+    console.log("Smoke tests passed: Google ID token verification, Google-only auth, legacy account linking, USD-based TP/SL, APR normalization, and account isolation.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();

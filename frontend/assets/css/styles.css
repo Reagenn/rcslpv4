@@ -53,6 +53,10 @@ body {
 .account-card h1, .account-card h2, .social-card h1, .social-card h2 { margin: 4px 0 12px; }
 .account-card form { display: grid; gap: 8px; }
 .account-card form > button { justify-self: start; }
+#googleSignInButton { min-height: 44px; margin: 16px 0; }
+.legacy-account-link { margin: 12px 0; }
+.legacy-account-link summary { cursor: pointer; }
+.legacy-account-link label { display: grid; gap: 4px; margin: 8px 0; }
 .form-error { min-height: 1.4em; color: var(--danger); }
 .small { font-size: 12px; }
 .account-bar {

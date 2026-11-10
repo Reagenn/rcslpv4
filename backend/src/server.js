@@ -24,6 +24,7 @@ const {
 const { migrateLegacyPositionRisk, positionExitReason } = require("./position-risk");
 const { autoTradingRiskReason } = require("./auto-trading-risk");
 const { pairPriceUsdForToken } = require("./dex-pricing");
+const { verifyGoogleIdToken } = require("./google-auth");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -1253,6 +1254,16 @@ function authThrottled(req) {
 function normalizeUsername(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
+function googleUsername(email, users) {
+  const localPart = String(email || "").split("@")[0].toLowerCase();
+  let base = localPart.replace(/[^a-z0-9_-]/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 16);
+  if (base.length < 3) base = "user";
+  let username = base;
+  while (Object.prototype.hasOwnProperty.call(users, username)) {
+    username = base.slice(0, 16) + "-" + crypto.randomBytes(3).toString("hex");
+  }
+  return username;
+}
 function validUsername(value) {
   return /^[a-z0-9][a-z0-9_-]{2,23}$/.test(value);
 }
@@ -1646,34 +1657,74 @@ async function handleRequest(req, res) {
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" && origin !== requestOrigin) {
       return sendJson(res, 403, { error: "Cross-origin request rejected." });
     }
-    const authRoute = pathname === "/api/auth/register" || pathname === "/api/auth/login";
+    if (pathname === "/api/auth/config" && req.method === "GET") {
+      return sendJson(res, 200, { googleClientId: process.env.GOOGLE_CLIENT_ID || "" });
+    }
+
+    const authRoute = pathname === "/api/auth/google";
     const authBody = authRoute ? await readBody(req) : null;
 
-    if (pathname === "/api/auth/register" && req.method === "POST") {
-      const username = normalizeUsername(authBody.username);
-      const password = authBody.password;
-      const displayName = authBody.displayName;
-      if (authThrottled(req)) return sendJson(res, 429, { error: "Too many authentication attempts. Try again later." });
-      if (!validUsername(username) || typeof password !== "string" || password.length < 10 || password.length > 128 || (displayName !== undefined && !validText(displayName, 40, false))) {
-        return sendJson(res, 400, { error: "Invalid username, password, or display name." });
+    if (pathname === "/api/auth/google" && req.method === "POST") {
+      const clientId = process.env.GOOGLE_CLIENT_ID || "";
+      if (!clientId) return sendJson(res, 503, { error: "Google Sign-In belum dikonfigurasi. Tambahkan GOOGLE_CLIENT_ID ke .env lalu restart server." });
+      if (authThrottled(req)) return sendJson(res, 429, { error: "Terlalu banyak percobaan autentikasi. Coba lagi nanti." });
+
+      let identity;
+      try {
+        identity = await verifyGoogleIdToken(authBody.credential, clientId);
+      } catch (_) {
+        return sendJson(res, 401, { error: "Google Sign-In gagal diverifikasi. Coba pilih akun Google lagi." });
       }
+
       const store = readUsersStore();
-      if (Object.prototype.hasOwnProperty.call(store.users, username)) return sendJson(res, 409, { error: "Username is already registered." });
-      const userId = crypto.randomBytes(16).toString("hex");
-      const salt = crypto.randomBytes(16).toString("hex");
-      const passwordHash = await new Promise((resolve, reject) => crypto.scrypt(password, salt, 64, (error, derived) => error ? reject(error) : resolve(derived.toString("hex"))));
-      const user = {
-        id: userId,
-        username,
-        passwordSalt: salt,
-        passwordHash,
-        profile: defaultProfile(username, displayName ? displayName.trim() : username),
-        following: [],
-        createdAt: new Date().toISOString(),
-      };
+      let user = Object.values(store.users).find((entry) => entry.googleSub === identity.sub) || null;
+      const legacyUsername = normalizeUsername(authBody.legacyUsername);
+      const legacyPassword = authBody.legacyPassword;
+      const hasLegacyInput = !!legacyUsername || (typeof legacyPassword === "string" && legacyPassword.length > 0);
+
+      if (hasLegacyInput) {
+        if (!validUsername(legacyUsername) || typeof legacyPassword !== "string" || legacyPassword.length > 128) {
+          return sendJson(res, 400, { error: "Masukkan username dan password akun lama untuk menautkan desk." });
+        }
+        const legacyUser = Object.prototype.hasOwnProperty.call(store.users, legacyUsername) ? store.users[legacyUsername] : null;
+        if (!legacyUser) return sendJson(res, 401, { error: "Username atau password akun lama tidak cocok." });
+        if (user && user.id !== legacyUser.id) return sendJson(res, 409, { error: "Akun Google ini sudah terhubung ke desk lain." });
+        if (legacyUser.googleSub && legacyUser.googleSub !== identity.sub) {
+          return sendJson(res, 409, { error: "Akun lama sudah ditautkan ke akun Google lain." });
+        }
+        if (user !== legacyUser) {
+          if (!legacyUser.passwordSalt || !legacyUser.passwordHash) return sendJson(res, 401, { error: "Username atau password akun lama tidak cocok." });
+          const candidate = await new Promise((resolve, reject) => crypto.scrypt(legacyPassword, legacyUser.passwordSalt, 64, (error, derived) => error ? reject(error) : resolve(derived.toString("hex"))));
+          if (!safeEqual(candidate, legacyUser.passwordHash)) return sendJson(res, 401, { error: "Username atau password akun lama tidak cocok." });
+        }
+        user = legacyUser;
+        user.googleSub = identity.sub;
+        user.googleEmail = identity.email;
+        delete user.passwordSalt;
+        delete user.passwordHash;
+      }
+
+      let created = false;
+      if (!user) {
+        const username = googleUsername(identity.email, store.users);
+        user = {
+          id: crypto.randomBytes(16).toString("hex"),
+          username,
+          googleSub: identity.sub,
+          googleEmail: identity.email,
+          profile: defaultProfile(username, identity.name || username),
+          following: [],
+          createdAt: new Date().toISOString(),
+        };
+        store.users[username] = user;
+        created = true;
+      } else {
+        user.googleEmail = identity.email;
+      }
+
       const deskFile = deskFileFor(user);
       fs.mkdirSync(path.dirname(deskFile), { recursive: true });
-      if (!store.legacyClaimed && fs.existsSync(DATA_FILE)) {
+      if (created && !store.legacyClaimed && fs.existsSync(DATA_FILE)) {
         const legacyTemp = deskFile + "." + crypto.randomBytes(8).toString("hex") + ".tmp";
         try {
           fs.copyFileSync(DATA_FILE, legacyTemp);
@@ -1683,40 +1734,19 @@ async function handleRequest(req, res) {
           throw error;
         }
         try { fs.chmodSync(deskFile, 0o600); } catch (_) {}
-      } else {
+      } else if (created && !fs.existsSync(deskFile)) {
         atomicWriteJson(deskFile, defaultState());
       }
-      store.legacyClaimed = true;
-      store.users[username] = user;
-      const sessionId = crypto.randomBytes(32).toString("hex");
-      store.sessions[hashSession(sessionId)] = { userId, expiresAt: Date.now() + SESSION_TTL_MS };
-      writeUsersStore(store);
-      ACTIVE_DATA_FILE = deskFile;
-      activeUserId = userId;
-      state = loadState(deskFile);
-      setSessionCookie(req, res, sessionId, Math.floor(SESSION_TTL_MS / 1000));
-      return sendJson(res, 201, { user: { username, displayName: user.profile.displayName } });
-    }
+      if (created) store.legacyClaimed = true;
 
-    if (pathname === "/api/auth/login" && req.method === "POST") {
-      const username = normalizeUsername(authBody.username);
-      if (authThrottled(req)) return sendJson(res, 429, { error: "Too many authentication attempts. Try again later." });
-      const store = readUsersStore();
-      const user = Object.prototype.hasOwnProperty.call(store.users, username) ? store.users[username] : null;
-      const passwordValid = typeof authBody.password === "string" && authBody.password.length <= 128;
-      const password = passwordValid ? authBody.password : "";
-      const salt = user ? user.passwordSalt : "lpdesk-invalid-user-salt";
-      const candidate = await new Promise((resolve, reject) => crypto.scrypt(password, salt, 64, (error, derived) => error ? reject(error) : resolve(derived.toString("hex"))));
-      const matches = !!user && passwordValid && safeEqual(candidate, user.passwordHash);
-      if (!matches) return sendJson(res, 401, { error: "Invalid username or password." });
       authAttempts.delete(authThrottleKey(req));
       const sessionId = crypto.randomBytes(32).toString("hex");
       store.sessions[hashSession(sessionId)] = { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS };
       for (const [id, session] of Object.entries(store.sessions)) if (session.expiresAt <= Date.now()) delete store.sessions[id];
       writeUsersStore(store);
-      ACTIVE_DATA_FILE = deskFileFor(user);
+      ACTIVE_DATA_FILE = deskFile;
       activeUserId = user.id;
-      state = loadState(ACTIVE_DATA_FILE);
+      state = loadState(deskFile);
       setSessionCookie(req, res, sessionId, Math.floor(SESSION_TTL_MS / 1000));
       return sendJson(res, 200, { user: { username: user.username, displayName: user.profile.displayName } });
     }

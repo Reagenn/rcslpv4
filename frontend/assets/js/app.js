@@ -3462,15 +3462,59 @@ function fillChainSelects() {
   $("discChain").innerHTML = '<option value="ALL">Semua</option>' + CHAINS.map((c) => '<option value="' + c + '">' + c + "</option>").join("");
 }
 let currentAccount = null;
-let authRegisterMode = false;
-function setAuthMode(register) {
-  authRegisterMode = register;
-  $("authTitle").textContent = register ? "Buat akun" : "Masuk ke desk";
-  $("authSubmit").textContent = register ? "Daftar" : "Masuk";
-  $("displayNameField").hidden = !register;
-  $("authPassword").autocomplete = register ? "new-password" : "current-password";
-  $("authModeToggle").textContent = register ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar";
-  $("authError").textContent = "";
+let googleIdentityReady = null;
+function waitForGoogleIdentity() {
+  if (window.google && window.google.accounts && window.google.accounts.id) return Promise.resolve();
+  if (!googleIdentityReady) {
+    googleIdentityReady = new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const check = () => {
+        if (window.google && window.google.accounts && window.google.accounts.id) return resolve();
+        if (Date.now() - startedAt >= 15000) return reject(new Error("Google Sign-In gagal dimuat. Periksa koneksi internet lalu muat ulang."));
+        setTimeout(check, 100);
+      };
+      check();
+    }).catch((error) => {
+      googleIdentityReady = null;
+      throw error;
+    });
+  }
+  return googleIdentityReady;
+}
+async function renderGoogleSignIn() {
+  const button = $("googleSignInButton");
+  if (!button) return;
+  button.replaceChildren();
+  try {
+    const config = await api("/api/auth/config");
+    if (!config.googleClientId) throw new Error("Google Sign-In belum dikonfigurasi. Tambahkan GOOGLE_CLIENT_ID ke .env lalu restart server.");
+    await waitForGoogleIdentity();
+    window.google.accounts.id.initialize({ client_id: config.googleClientId, callback: handleGoogleCredential });
+    const buttonWidth = Math.min(320, Math.max(120, Math.floor(button.clientWidth || 320)));
+    window.google.accounts.id.renderButton(button, { theme: "filled_black", size: "large", shape: "pill", text: "continue_with", width: buttonWidth });
+  } catch (error) {
+    $("authError").textContent = error.friendly || error.message;
+  }
+}
+async function handleGoogleCredential(response) {
+  if (!response || !response.credential) {
+    $("authError").textContent = "Google tidak mengembalikan kredensial. Coba lagi.";
+    return;
+  }
+  $("authError").textContent = "Memverifikasi akun Google…";
+  const payload = { credential: response.credential };
+  const legacyUsername = $("legacyUsername").value.trim();
+  const legacyPassword = $("legacyPassword").value;
+  if (legacyUsername || legacyPassword) {
+    payload.legacyUsername = legacyUsername;
+    payload.legacyPassword = legacyPassword;
+  }
+  try {
+    await postJson("/api/auth/google", payload);
+    location.href = "/";
+  } catch (error) {
+    $("authError").textContent = error.friendly || error.message;
+  }
 }
 function showAuth(message) {
   $("authScreen").hidden = false;
@@ -3478,7 +3522,8 @@ function showAuth(message) {
   $("socialScreen").hidden = true;
   $("profileEditor").hidden = true;
   $("app").hidden = true;
-  if (message) $("authError").textContent = message;
+  $("authError").textContent = message || "";
+  renderGoogleSignIn();
 }
 function updateProfileAvatarPreview(source) {
   const preview = $("profileAvatarPreview");
@@ -3649,19 +3694,6 @@ async function bootstrapAccount() {
   startNaraSchedule();
 }
 function bindAccountUi() {
-  $("authModeToggle").addEventListener("click", () => setAuthMode(!authRegisterMode));
-  $("authForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    $("authSubmit").disabled = true;
-    $("authError").textContent = "";
-    try {
-      const payload = { username: $("authUsername").value, password: $("authPassword").value };
-      if (authRegisterMode && $("authDisplayName").value.trim()) payload.displayName = $("authDisplayName").value.trim();
-      await postJson(authRegisterMode ? "/api/auth/register" : "/api/auth/login", payload);
-      location.href = "/";
-    } catch (error) { $("authError").textContent = error.friendly || error.message; }
-    finally { $("authSubmit").disabled = false; }
-  });
   $("logoutBtn").addEventListener("click", async () => {
     try { await postJson("/api/auth/logout", {}); } catch (_) {}
     clearInterval(rtTimer);

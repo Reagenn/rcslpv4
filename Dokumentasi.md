@@ -95,8 +95,8 @@ lp-desk-local-v4/
 
 | Endpoint | Method | Fungsi |
 |---|---|---|
-| `/api/auth/register` | POST | Daftar akun dan membuat session |
-| `/api/auth/login` | POST | Masuk dengan cookie session |
+| `/api/auth/config` | GET | Mengambil Google OAuth Client ID publik untuk UI |
+| `/api/auth/google` | POST | Verifikasi ID token Google, membuat/masuk akun dan session; dapat menautkan akun lokal lama sekali |
 | `/api/auth/logout` | POST | Menghapus session |
 | `/api/auth/me` | GET | Memeriksa akun session saat ini |
 | `/api/profile` | GET/POST | Baca/simpan profil dan preferensi privacy |

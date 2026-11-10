@@ -31,13 +31,17 @@ npm install   # tidak ada dependensi eksternal; memastikan struktur siap
 npm start     # menjalankan backend di http://localhost:3000
 ```
 
-Lalu buka **http://localhost:3000** di browser dan daftar akun. Preview APR memakai GeckoTerminal untuk pool Uniswap v4 pada network EVM termasuk Robinhood Chain, serta Meteora DLMM Data API untuk Solana. Tidak perlu Subgraph, API key, atau konfigurasi `.env`; hasil di-cache 5 menit.
+Sebelum masuk, buat OAuth Client ID Google bertipe **Web application** di Google Cloud Console dan tambahkan `http://localhost:3000` sebagai Authorized JavaScript origin. Simpan Client ID (bukan client secret) di `.env` pada root proyek:
+
+```env
+GOOGLE_CLIENT_ID=your-google-oauth-client-id
+```
+
+Restart server, lalu buka **http://localhost:3000**. Tombol Google yang sama digunakan untuk masuk dan mendaftar; token ID diverifikasi server langsung ke Google. Untuk deployment HTTPS, daftarkan origin domain publik di Google Cloud Console dan gunakan HTTPS. Preview APR memakai GeckoTerminal untuk pool Uniswap v4 pada network EVM termasuk Robinhood Chain, serta Meteora DLMM Data API untuk Solana; hasil di-cache 5 menit.
 
 Uniswap v4 APR diestimasi dari volume 24 jam × fee tier ÷ TVL × 365; Solana/Meteora menggunakan fee 24 jam yang dilaporkan API ÷ TVL × 365. Angka ini indikatif, bukan jaminan hasil. Tombol Preview hanya menampilkan pool; untuk membuka posisi **simulasi** aktifkan Nara dan tekan “Jalankan simulasi sekarang”. Aplikasi tidak mengirim transaksi on-chain.
 
-Akun pertama mengambil salinan state demo lama (`backend/data/data.json`); akun selanjutnya
-mendapat desk baru yang privat. State akun disimpan di `backend/data/users.json`
-dan `backend/data/desks/` (jangan commit/unggah file tersebut).
+Akun Google pertama mengambil salinan state demo lama (`backend/data/data.json`); akun selanjutnya mendapat desk baru yang privat. Pengguna yang sudah punya akun lokal dapat membuka **Punya akun LP Desk lama?** dan menautkannya dengan username/password lama sekali saja saat memilih Google. Setelah ditautkan, password lama dihapus dari record dan login berikutnya hanya memakai Google. Tanpa penautan, akun Google baru mendapat desk terpisah. State akun disimpan di `backend/data/users.json` dan `backend/data/desks/` (jangan commit/unggah file tersebut).
 
 Server hanya bind ke `127.0.0.1` secara default. Untuk reverse proxy/container,
 set `HOST=0.0.0.0` dan gunakan HTTPS di proxy. Penyimpanan JSON/session ini
