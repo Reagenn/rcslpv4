@@ -213,11 +213,15 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
       const html = await page.text();
       assert(html.includes('href="/assets/css/styles.css"'), "route uses root-relative stylesheet: " + route);
       assert(html.includes('src="/assets/js/app.js"'), "route uses root-relative app script: " + route);
+      const csp = page.headers.get("content-security-policy") || "";
+      assert(csp.includes("object-src 'none'") && csp.includes("script-src 'self'"), "page sends restrictive content security policy: " + route);
     }
     for (const asset of ["/assets/css/styles.css", "/assets/js/app.js"]) {
       const response = await fetch(base + asset);
       assert.equal(response.status, 200, "root asset is served: " + asset);
     }
+    const traversal = await fetch(base + "/..%5cbackend%5cdata%5cusers.json");
+    assert(!String(await traversal.text()).includes("google-sub-alice"), "static file route does not expose private backend data");
 
     let result = await request("/api/state");
     assert.equal(result.response.status, 401, "desk API requires authentication");
@@ -240,6 +244,16 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     assert.equal(result.response.status, 200, "authenticated user can fund a simulated chain balance");
     assert.equal(result.data.balances.SOL.usdc, 1625.5, "top-up adds USDC to the selected chain only");
     assert.equal(result.data.transactions[0].side, "deposit", "simulated top-up is recorded in transaction history");
+    result = await request("/api/profile", "POST", cookieA, { bio: "x".repeat(65 * 1024) });
+    assert.equal(result.response.status, 413, "oversized JSON request is rejected");
+    const malformedBody = await fetch(base + "/api/profile", {
+      method: "POST", headers: { cookie: cookieA, origin: base, "content-type": "application/json" }, body: "{",
+    });
+    assert.equal(malformedBody.status, 400, "malformed JSON is rejected");
+    const wrongContentType = await fetch(base + "/api/profile", {
+      method: "POST", headers: { cookie: cookieA, origin: base, "content-type": "text/plain" }, body: "{}",
+    });
+    assert.equal(wrongContentType.status, 415, "non-JSON mutation is rejected");
     result = await request("/api/balance/fund", "POST", cookieA, { chain: "NOT_A_CHAIN", amount: 10 });
     assert.equal(result.response.status, 400, "invalid chain top-up is rejected");
     result = await request("/api/balance/fund", "POST", cookieA, { chain: "SOL", amount: 1000000.01 });

@@ -1159,9 +1159,25 @@ async function runCandidateAgent() {
 function securityHeaders(res) {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
+  res.setHeader("x-permitted-cross-domain-policies", "none");
   res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("cross-origin-opener-policy", "same-origin-allow-popups");
   res.setHeader("cache-control", "no-store");
-  res.setHeader("content-security-policy", "frame-ancestors 'none'; base-uri 'self'");
+  res.setHeader("content-security-policy", [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' https://accounts.google.com https://www.gstatic.com",
+    "connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://raw.githubusercontent.com https://mainnet.base.org",
+    "frame-src https://accounts.google.com",
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "manifest-src 'self'",
+  ].join("; "));
 }
 function sendJson(res, code, obj) {
   securityHeaders(res);
@@ -1174,26 +1190,42 @@ function sendText(res, code, text, type) {
   res.writeHead(code, { "content-type": type || "text/plain; charset=utf-8" });
   res.end(text);
 }
+function requestBodyError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
 function readBody(req) {
-  return new Promise((resolve) => {
-    let data = "";
+  return new Promise((resolve, reject) => {
+    const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/json") return reject(requestBodyError(415, "Content-Type harus application/json."));
+    const chunks = [];
+    let size = 0;
     let tooLarge = false;
     req.on("data", (chunk) => {
-      if (data.length + chunk.length > 64 * 1024) {
+      size += chunk.length;
+      if (size > 64 * 1024) {
         tooLarge = true;
         return;
       }
-      data += chunk;
+      if (!tooLarge) chunks.push(chunk);
     });
     req.on("end", () => {
-      if (tooLarge) return resolve({});
+      if (tooLarge) return reject(requestBodyError(413, "Ukuran request terlalu besar."));
+      if (!chunks.length) return resolve({});
+      let parsed;
       try {
-        const parsed = data ? JSON.parse(data) : {};
-        resolve(parsed && typeof parsed === "object" ? parsed : {});
+        parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       } catch (_) {
-        resolve({});
+        return reject(requestBodyError(400, "Body JSON tidak valid."));
       }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return reject(requestBodyError(400, "Body harus berupa object JSON."));
+      }
+      resolve(parsed);
     });
+    req.on("error", () => reject(requestBodyError(400, "Request body tidak dapat dibaca.")));
+    req.on("aborted", () => reject(requestBodyError(400, "Request dibatalkan sebelum selesai.")));
   });
 }
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
@@ -1798,9 +1830,13 @@ async function handleRequest(req, res) {
     if (req.method === "GET" && !pathname.startsWith("/api/")) {
       const spaRoute = /^\/u\/[^/]+\/?$/.test(pathname) || pathname === "/following" || pathname === "/leaderboard";
       const rel = pathname === "/" || spaRoute ? "/index.html" : pathname;
-      const safe = path.normalize(rel).replace(/^(\.\.[\/\\])+/, "");
-      const filePath = path.join(FRONTEND_DIR, safe);
-      if (!filePath.startsWith(FRONTEND_DIR)) return sendText(res, 403, "Forbidden");
+      let decodedPath;
+      try { decodedPath = decodeURIComponent(rel); } catch (_) { return sendText(res, 400, "Invalid path"); }
+      const filePath = path.resolve(FRONTEND_DIR, "." + decodedPath);
+      const relativePath = path.relative(FRONTEND_DIR, filePath);
+      if (relativePath === ".." || relativePath.startsWith(".." + path.sep) || path.isAbsolute(relativePath)) {
+        return sendText(res, 403, "Forbidden");
+      }
       fs.readFile(filePath, (err, data) => {
         if (err && spaRoute) {
           return fs.readFile(path.join(FRONTEND_DIR, "index.html"), (indexError, indexData) => {
@@ -2767,13 +2803,14 @@ async function handleRequest(req, res) {
 
     return sendJson(res, 404, { error: "Endpoint tidak ditemukan." });
   } catch (e) {
+    if (!res.headersSent && e && Number.isInteger(e.statusCode)) return sendJson(res, e.statusCode, { error: e.message });
     if (!res.headersSent) return sendJson(res, 500, { error: "Terjadi kesalahan server. Coba lagi nanti." });
     if (!res.writableEnded) res.end();
   }
 }
 
 let requestQueue = Promise.resolve();
-const server = http.createServer((req, res) => {
+const server = http.createServer({ maxHeaderSize: 16 * 1024, requestTimeout: 30000, headersTimeout: 10000, keepAliveTimeout: 5000 }, (req, res) => {
   const current = requestQueue.then(() => handleRequest(req, res));
   requestQueue = current.catch(() => {});
 });
