@@ -27,8 +27,9 @@ Persyaratan: **Node.js 18+**. Jalankan dari **dalam folder hasil ekstrak**
 `lp-desk-local-v4/`:
 
 ```bash
-npm install   # tidak ada dependensi eksternal; memastikan struktur siap
-npm start     # menjalankan backend di http://localhost:3000
+npm install
+npm run build:frontend  # bundle + minify frontend ke frontend/assets/js/app.min.js
+npm start               # menjalankan backend di http://localhost:3000
 ```
 
 Sebelum masuk, buat OAuth Client ID Google bertipe **Web application** di Google Cloud Console dan tambahkan `http://localhost:3000` sebagai Authorized JavaScript origin. Simpan Client ID (bukan client secret) di `.env` pada root proyek:
@@ -66,7 +67,8 @@ saldo simulasi **5.000 USDC**.
 
 ```
 lp-desk-local-v4/
-  frontend/                 -> index.html + assets/css/styles.css + assets/js/app.js
+  frontend/                 -> index.html + assets/css/styles.css + assets/js/app.min.js (served)
+  frontend-src/app.js       -> source frontend yang dapat diedit (tidak disajikan server)
   backend/
     src/server.js           -> server Node http murni (tanpa dependensi) + semua API
     data/data.json          -> legacy state (sumber migrasi akun pertama)
@@ -75,7 +77,7 @@ lp-desk-local-v4/
     package.json
   Dokumentasi.md            -> dokumentasi lengkap: arsitektur, endpoint, PETA FITUR
   README.md
-  package.json              -> script start + test:phase3
+  package.json              -> script start, test:phase3, build:frontend
   .gitignore
 ```
 

@@ -45,7 +45,8 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
   assert(Math.abs(pairPriceUsdForToken(aiWethPair, wethAddress, "ROBINHOOD") - (0.02833 / 0.00001336)) < 1e-9, "quote-side token USD price is derived from priceNative");
   assert.equal(pairPriceUsdForToken(aiWethPair, "0x3333333333333333333333333333333333333333", "ROBINHOOD"), null, "unrelated token address is rejected");
   assert.equal(pairPriceUsdForToken({ ...aiWethPair, priceNative: undefined }, wethAddress, "ROBINHOOD"), null, "quote-side price is rejected without priceNative");
-  const frontendScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.js"), "utf8");
+  const frontendScript = fs.readFileSync(path.join(root, "frontend-src", "app.js"), "utf8");
+  const frontendMinifiedScript = fs.readFileSync(path.join(root, "frontend", "assets", "js", "app.min.js"), "utf8");
   const frontendHtml = fs.readFileSync(path.join(root, "frontend", "index.html"), "utf8");
   const serverScript = fs.readFileSync(path.join(root, "backend", "src", "server.js"), "utf8");
   assert(serverScript.includes("monthlyPositionPnl()"), "desk state exposes month-to-date position PnL");
@@ -60,6 +61,8 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
   assert(serverScript.includes("/api/auth/google") && serverScript.includes("verifyGoogleIdToken"), "Google ID tokens are verified on the backend");
   assert(frontendHtml.includes("accounts.google.com/gsi/client") && frontendHtml.includes("id=\"googleSignInButton\""), "auth screen offers Google Sign-In");
   assert(!frontendHtml.includes('id="authPassword"'), "password login form is removed");
+  assert(frontendHtml.includes('src="/assets/js/app.min.js"') && !frontendHtml.includes('src="/assets/js/app.js"'), "HTML loads only the minified frontend bundle");
+  assert(frontendMinifiedScript.length > 0 && frontendMinifiedScript.length < frontendScript.length, "minified frontend bundle is smaller than the editable source");
   assert(serverScript.includes("byChainAddress"), "positions sharing an address on different chains are repriced separately");
   assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "APR scanner does not use a Subgraph URL");
   assert(UNISWAP_V4_NETWORKS.some((network) => network.chain === "ROBINHOOD"), "Robinhood Chain v4 pools are included");
@@ -212,14 +215,16 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
       assert.equal(page.status, 200, "SPA route is served: " + route);
       const html = await page.text();
       assert(html.includes('href="/assets/css/styles.css"'), "route uses root-relative stylesheet: " + route);
-      assert(html.includes('src="/assets/js/app.js"'), "route uses root-relative app script: " + route);
+      assert(html.includes('src="/assets/js/app.min.js"'), "route uses root-relative minified app script: " + route);
       const csp = page.headers.get("content-security-policy") || "";
       assert(csp.includes("object-src 'none'") && csp.includes("script-src 'self'"), "page sends restrictive content security policy: " + route);
     }
-    for (const asset of ["/assets/css/styles.css", "/assets/js/app.js"]) {
+    for (const asset of ["/assets/css/styles.css", "/assets/js/app.min.js"]) {
       const response = await fetch(base + asset);
       assert.equal(response.status, 200, "root asset is served: " + asset);
     }
+    const sourceResponse = await fetch(base + "/assets/js/app.js");
+    assert.equal(sourceResponse.status, 404, "editable source is outside the public frontend directory");
     const traversal = await fetch(base + "/..%5cbackend%5cdata%5cusers.json");
     assert(!String(await traversal.text()).includes("google-sub-alice"), "static file route does not expose private backend data");
 

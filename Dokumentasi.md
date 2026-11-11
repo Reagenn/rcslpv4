@@ -63,10 +63,12 @@ lp-desk-local-v4/
 
 ### Arsitektur
 
-- **Frontend** (`frontend/assets/js/app.js`) adalah single-page app vanilla
-  JS: tidak ada framework/build step. Ia memanggil API backend lewat
-  `api()`/`postJson()`, me-render semua panel, dan menggambar kartu
-  ReagenCorp ke canvas.
+- **Frontend source** (`frontend-src/app.js`) adalah single-page app vanilla
+  JS yang dapat diedit. `npm run build:frontend` membundle dan meminifikasinya
+  menjadi `frontend/assets/js/app.min.js`; hanya bundle itu yang berada di
+  folder statis dan dimuat oleh `frontend/index.html`. Source memanggil API
+  backend lewat `api()`/`postJson()`, me-render semua panel, dan menggambar
+  kartu ReagenCorp ke canvas.
 - **Backend** (`backend/src/server.js`) melakukan tiga hal: (1) menyajikan
   file statis frontend, (2) menyediakan REST API JSON `/api/*`, (3) menjadi
   satu-satunya pemanggil API publik eksternal (DexScreener, Meteora DLMM
@@ -189,7 +191,7 @@ oleh `normalizeVerdictFilter()`.
 ## 3. PETA FITUR
 
 Semua file frontend yang sama muncul berulang karena proyek ini satu
-halaman: UI di `frontend/index.html`, logika di `frontend/assets/js/app.js`,
+halaman: UI di `frontend/index.html`, source logika di `frontend-src/app.js`,
 gaya di `frontend/assets/css/styles.css`. Nama fungsi di bawah adalah nama
 persis di kode.
 

@@ -1,12 +1,12 @@
 "use strict";
-const CACHE_NAME = "rcslpv4-shell-v4";
+const CACHE_NAME = "rcslpv4-shell-v5";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
   "/icon.svg",
   "/assets/css/styles.css",
-  "/assets/js/app.js",
+  "/assets/js/app.min.js",
 ];
 
 self.addEventListener("install", (event) => {
