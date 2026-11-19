@@ -1,11 +1,70 @@
 "use strict";
-/* LP Desk local frontend v4 — LP positions remain simulation-only.
- * Browser-wallet swaps are limited to user-confirmed Base Mainnet transactions; no keys are read or stored.
- * SATU font stack dipakai UI (CSS) dan canvas Card Studio (FONT_STACK di sini). */
+
+/**
+ * @fileoverview LP Desk local frontend v4.
+ *
+ * Feature map:
+ * - Authentication and social profiles: `bootstrapAccount`, `renderSocialRoute`,
+ *   and `bindAccountUi` exchange session/profile data with `/api/auth/*`,
+ *   `/api/profile*`, `/api/following`, and `/api/leaderboard`.
+ * - Desk state and simulation: `loadState` hydrates balances, transactions,
+ *   positions, settings, leaders, and agent logs from `/api/state`; renderers
+ *   only derive display data and update the DOM.
+ * - LP operations: `openLp`, `handlePositionAction`, and Copy LP functions
+ *   validate form input before posting simulation commands to `/api/lp/*` or
+ *   `/api/copylp/*`, then reload the canonical server state.
+ * - Discovery and agents: Top LP, Nara, Byte, Sora, and Kopi consume candidate,
+ *   settings, and agent endpoints. Their side effects are simulated positions,
+ *   settings updates, activity logs, and UI notifications.
+ * - Realtime and notifications: one polling loop reads `/api/realtime`, updates
+ *   the active feature, and emits optional browser notifications. PWA support
+ *   depends on the Notification and Service Worker browser APIs.
+ * - Monthly/Card Studio: monthly ledger data flows from `/api/monthly` into the
+ *   calendar and a shared canvas renderer used by preview, PNG, and WebM export.
+ * - Browser wallet: EIP-1193 reads and explicitly confirmed Base Mainnet calls
+ *   are isolated from simulation APIs. No private key is read or stored.
+ *
+ * End-to-end data flow: DOM input -> local validation -> `api`/`postJson` or
+ * EIP-1193 provider -> canonical response -> in-memory state -> renderer -> DOM.
+ * External dependencies are the backend API, DexScreener/Meteora data proxied by
+ * the backend, Google Identity Services, the Uniswap token list, wallet RPC,
+ * Service Worker, Notification, Canvas, and MediaRecorder browser APIs.
+ */
 const $ = (id) => document.getElementById(id);
 const FONT_STACK = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif';
 const CHAINS = ["SOL", "BASE", "ROBINHOOD", "BSC", "HYPEREVM", "ARC", "ETH"];
 const STABLE_QUOTES = ["USDC", "USDT", "USD", "SOL", "WSOL", "ETH", "WETH"];
+const STORAGE_KEYS = Object.freeze({
+  notificationPreferences: "rcslpv4-browser-notifications",
+  idrRate: "rcslpv4-rate-idr",
+  ethRate: "rcslpv4-rate-eth",
+});
+const REALTIME_INTERVAL_MS = 5_000;
+const REALTIME_COUNTDOWN_INTERVAL_MS = 1_000;
+const REALTIME_INTERVAL_SECONDS = REALTIME_INTERVAL_MS / 1_000;
+const TOAST_DURATION_MS = 6_000;
+const TOKEN_LIST_TIMEOUT_MS = 10_000;
+const SWAP_QUOTE_TTL_MS = 2 * 60 * 1_000;
+const TRANSACTION_RECEIPT_ATTEMPTS = 60;
+const TRANSACTION_RECEIPT_POLL_MS = 2_000;
+const GOOGLE_IDENTITY_TIMEOUT_MS = 15_000;
+const GOOGLE_IDENTITY_POLL_MS = 100;
+const DOWNLOAD_URL_REVOKE_MS = 4_000;
+const COPY_FEEDBACK_DURATION_MS = 2_000;
+const CARD_RECORDING_DURATION_MS = 10_000;
+const CARD_WIDTH = 1_600;
+const CARD_HEIGHT = 1_000;
+const CARD_VIDEO_FPS = 30;
+const CARD_VIDEO_BITRATE = 12_000_000;
+const MAX_BALANCE_FUNDING_USD = 1_000_000;
+const SIMULATED_STARTING_CAPITAL_USD = 5_000;
+const MAX_PROFILE_IMAGE_BYTES = 8 * 1_024 * 1_024;
+const MAX_PROFILE_AVATAR_BYTES = 32 * 1_024;
+const MAX_TOKEN_DECIMALS = 36;
+const EVM_ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
+const TRANSACTION_HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const SUPPORTED_POOL_FEES = new Set([500, 3_000, 10_000]);
+const SUPPORTED_SLIPPAGE_BPS = new Set([50, 100, 200, 500]);
 
 let deskState = null;
 let selectedToken = null;
@@ -13,14 +72,15 @@ let lpLastResults = [];
 let candidatesData = null;
 let ddContext = null;
 let currentMonth = new Date().toISOString().slice(0, 7);
-let cardBg = { type: null, img: null, video: null, name: "", objectUrl: "" };
+let cardBg = createEmptyCardBackground();
 let cardMonthlyCache = null;
 let videoPreviewRaf = null;
-let settings = JSON.parse(JSON.stringify(defaultSettings()));
+let pendingCardMediaUrl = "";
+let settings = defaultSettings();
 let rtPaused = false;
 let rtTimer = null;
 let rtCountdownTimer = null;
-let rtSecondsLeft = 5;
+let rtSecondsLeft = REALTIME_INTERVAL_SECONDS;
 let discoverState = { tab: "trending", tf: "h24", hideRisky: false, chain: "ALL", expanded: null };
 let copyDiscovery = null;
 let copySelectedPool = null;
@@ -37,8 +97,8 @@ let posSearchQuery = "";
 let balanceCurrency = "USD";
 const balanceFundingInProgress = new Set();
 let balanceRates = {
-  idr: Number(localStorage.getItem("rcslpv4-rate-idr")) || 0,
-  eth: Number(localStorage.getItem("rcslpv4-rate-eth")) || 0,
+  idr: readStoredNumber(STORAGE_KEYS.idrRate),
+  eth: readStoredNumber(STORAGE_KEYS.ethRate),
 };
 let lpSideVal = "Both";
 let lpStrategyVal = "Spot";
@@ -49,7 +109,6 @@ let walletAddress = "";
 let walletChainId = "";
 let walletNativeBalance = null;
 let walletBoundProvider = null;
-const NOTIFICATION_PREFS_KEY = "rcslpv4-browser-notifications";
 let notificationPreferences = loadNotificationPreferences();
 let rangeNotificationBaselineReady = false;
 let previousRealtimeRange = new Map();
@@ -71,21 +130,88 @@ let tokenPickerTarget = "A";
 let baseMainnetPoolContext = null;
 let baseMainnetSwapQuote = null;
 const LP_PRESETS = { tight: [-5, 5], wide: [-20, 20] };
-const CHAIN_COLORS = { SOL: "#14f195", BASE: "#5b8cff", ROBINHOOD: "#00c805", BSC: "#f0b90b", HYPEREVM: "#a7f3ea", ARC: "#7d9bff", ETH: "#8a9cf5" };
+const CHAIN_COLORS = {
+  SOL: "#14f195",
+  BASE: "#5b8cff",
+  ROBINHOOD: "#00c805",
+  BSC: "#f0b90b",
+  HYPEREVM: "#a7f3ea",
+  ARC: "#7d9bff",
+  ETH: "#8a9cf5",
+};
 
+/** Returns a fresh, empty Card Studio background state. */
+function createEmptyCardBackground() {
+  return { type: null, img: null, video: null, name: "", objectUrl: "" };
+}
+
+/** Reads a finite numeric preference without allowing storage failures to stop boot. */
+function readStoredNumber(key) {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isFinite(value) ? value : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/** Persists a preference when storage is available. */
+function writeStoredNumber(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch (_) {
+    // The in-memory value remains usable when storage is blocked.
+  }
+}
+
+/** Normalizes unknown thrown values into a user-facing message. */
+function getErrorMessage(error, fallback = "Terjadi kesalahan. Coba lagi nanti.") {
+  if (typeof error === "string" && error) return error;
+  const message = error && (error.friendly || error.message);
+  return message ? String(message) : fallback;
+}
+
+/** Resolves after the requested delay. */
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+/** Builds the default settings without sharing nested mutable objects. */
 function defaultSettings() {
   // Disamakan dengan default hosted: Nara 70/250/3/wide/consider,
   // Byte TP +22% / SL 28%, Kopi 250/3/wide.
   return {
-    autoTrading: { enabled: false, minScore: 70, amountPerPosition: 250, maxPositions: 3, chainFilter: "ALL", rangePreset: "wide", verdictFilter: "consider", dailyLossLimit: 150, minLiquidity: 50000, minHolder: 500, source: "DEX", minApr: 20 },
+    autoTrading: {
+      enabled: false,
+      minScore: 70,
+      amountPerPosition: 250,
+      maxPositions: 3,
+      chainFilter: "ALL",
+      rangePreset: "wide",
+      verdictFilter: "consider",
+      dailyLossLimit: 150,
+      minLiquidity: 50_000,
+      minHolder: 500,
+      source: "DEX",
+      minApr: 20,
+    },
     tpSl: { armed: false, defaultTpPct: 22, defaultSlPct: 28 },
-    copyTrading: { enabled: false, leaderId: null, amountPerCopy: 250, maxPositions: 3, rangePreset: "wide", dailyLossLimit: 150 },
+    copyTrading: {
+      enabled: false,
+      leaderId: null,
+      amountPerCopy: 250,
+      maxPositions: 3,
+      rangePreset: "wide",
+      dailyLossLimit: 150,
+    },
   };
 }
+
+/** Loads notification preferences, falling back safely on malformed storage data. */
 function loadNotificationPreferences() {
   const defaults = { enabled: false, takeProfit: true, stopLoss: true, outOfRange: true };
   try {
-    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_PREFS_KEY) || "null");
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.notificationPreferences) || "null");
     if (!stored || typeof stored !== "object") return defaults;
     return {
       enabled: stored.enabled === true,
@@ -98,7 +224,11 @@ function loadNotificationPreferences() {
   }
 }
 function saveNotificationPreferences() {
-  localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences));
+  try {
+    localStorage.setItem(STORAGE_KEYS.notificationPreferences, JSON.stringify(notificationPreferences));
+  } catch (_) {
+    // Preferences still apply for the current tab when storage is unavailable.
+  }
   renderNotificationSettings();
 }
 function renderNotificationSettings() {
@@ -153,7 +283,13 @@ function sendBrowserNotification(title, body, tag) {
   }
   fallback();
 }
+/**
+ * Emits opt-in notifications for TP/SL closures and in-range transitions.
+ * @param {object} data Realtime API payload.
+ * @returns {void}
+ */
 function processRealtimeNotifications(data) {
+  if (!data || typeof data !== "object") return;
   for (const item of data.closedByTpSl || []) {
     if (item.reason === "TP" && notificationPreferences.takeProfit) {
       sendBrowserNotification("Take profit simulasi", item.symbol + " ditutup otomatis pada harga " + fmtPrice(item.price) + ".", "rcs-tp-" + item.id);
@@ -202,11 +338,17 @@ async function initPwa() {
   });
   $("pwaInstallBtn").addEventListener("click", async () => {
     if (!deferredPwaInstallPrompt) return;
-    deferredPwaInstallPrompt.prompt();
-    const choice = await deferredPwaInstallPrompt.userChoice;
+    const installPrompt = deferredPwaInstallPrompt;
     deferredPwaInstallPrompt = null;
-    $("pwaInstallBtn").hidden = true;
-    updatePwaStatus(choice.outcome === "accepted" ? "Install diterima." : "Install dibatalkan; kamu bisa install dari menu browser.");
+    try {
+      await installPrompt.prompt();
+      const choice = await installPrompt.userChoice;
+      updatePwaStatus(choice.outcome === "accepted" ? "Install diterima." : "Install dibatalkan; kamu bisa install dari menu browser.");
+    } catch (_) {
+      updatePwaStatus("Prompt install tidak dapat dibuka; gunakan menu install browser.");
+    } finally {
+      $("pwaInstallBtn").hidden = true;
+    }
   });
 }
 function initNotificationSettings() {
@@ -217,7 +359,7 @@ function initNotificationSettings() {
   $("notifyOutOfRange").addEventListener("change", () => { notificationPreferences.outOfRange = $("notifyOutOfRange").checked; saveNotificationPreferences(); });
 }
 function fmtCount(n) {
-  if (n == null || !isFinite(Number(n))) return "—";
+  if (n == null || !Number.isFinite(Number(n))) return "—";
   const v = Number(n);
   if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
   if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "K";
@@ -236,7 +378,7 @@ function fmtCompact(n) {
   return "$" + v.toFixed(2);
 }
 function fmtPct(n, digits) {
-  if (n == null || !isFinite(Number(n))) return "—";
+  if (n == null || !Number.isFinite(Number(n))) return "—";
   const v = Number(n);
   if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + "B%";
   if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M%";
@@ -265,16 +407,33 @@ function esc(s) {
 }
 function showToast(msg, isErr) {
   const t = $("toast");
+  if (!t) return;
   t.textContent = msg;
   t.className = "toast" + (isErr ? " err" : "");
   t.hidden = false;
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     t.hidden = true;
-  }, 6000);
+  }, TOAST_DURATION_MS);
 }
+
+/**
+ * Executes a backend request and normalizes HTTP, session, and network errors.
+ * @param {string} pathname Same-origin API path.
+ * @param {RequestInit} [options] Fetch options.
+ * @returns {Promise<object>} Parsed JSON response, or an empty object for an empty body.
+ * @throws {Error} Error enriched with `status`, `friendly`, and `details` when available.
+ */
 async function api(pathname, options) {
-  const res = await fetch(pathname, options);
+  let res;
+  try {
+    res = await fetch(pathname, options);
+  } catch (cause) {
+    const error = new Error("Backend tidak dapat dihubungi.");
+    error.friendly = "Server tidak dapat dihubungi. Periksa koneksi lalu coba lagi.";
+    error.cause = cause;
+    throw error;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && currentAccount && !pathname.startsWith("/api/auth/")) {
@@ -301,8 +460,20 @@ function setMsg(id, text, isErr) {
   el.style.color = isErr ? "var(--danger)" : "";
 }
 
+/** Updates a status element that uses the shared `.error` state class. */
+function setStatusText(id, message, isError) {
+  const element = $(id);
+  if (!element) return;
+  element.textContent = message || "";
+  element.classList.toggle("error", Boolean(isError));
+}
+
 /* ---------------- State loading + renderers ---------------- */
 
+/**
+ * Loads canonical desk state, then refreshes every dependent desk renderer.
+ * @returns {Promise<object>} The latest state payload.
+ */
 async function loadState() {
   deskState = await api("/api/state");
   if (deskState.settings) settings = deskState.settings;
@@ -346,7 +517,7 @@ function renderBalances() {
       formatBalanceAmount(Number(b.usdc) || 0) +
       "</strong>" +
       (toks.length ? toks.map(([, t]) => '<span class="tok">' + esc(t.symbol) + ": " + Number(t.qty).toFixed(4) + "</span>").join("<br>") : '<span class="tok">Tidak ada token simulasi</span>') +
-      '<form class="balance-fund-row" data-fund-form="' + c + '"><input type="number" min="0.01" max="1000000" step="0.01" placeholder="Tambah USDC" aria-label="Nominal USDC simulasi untuk ' + c + '" data-fund-amount="' + c + '" required /><button class="secondary" type="submit"' + (balanceFundingInProgress.has(c) ? " disabled" : "") + '>Isi saldo</button></form>' +
+      '<form class="balance-fund-row" data-fund-form="' + c + '"><input type="number" min="0.01" max="' + MAX_BALANCE_FUNDING_USD + '" step="0.01" placeholder="Tambah USDC" aria-label="Nominal USDC simulasi untuk ' + c + '" data-fund-amount="' + c + '" required /><button class="secondary" type="submit"' + (balanceFundingInProgress.has(c) ? " disabled" : "") + '>Isi saldo</button></form>' +
       "</div>"
     );
   }).join("");
@@ -361,7 +532,7 @@ async function fundSimulatedBalance(chain) {
   const grid = $("balanceGrid");
   const input = grid.querySelector("[data-fund-amount=\"" + chain + "\"]");
   const requestedAmount = Number(input && input.value);
-  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > 1_000_000) {
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > MAX_BALANCE_FUNDING_USD) {
     setMsg("balanceMsg", "Masukkan nominal USDC di atas 0, maksimal $1.000.000 per pengisian.", true);
     return;
   }
@@ -374,16 +545,14 @@ async function fundSimulatedBalance(chain) {
     setMsg("balanceMsg", "Saldo simulasi " + chain + " ditambah " + fmtMoney(result.amount) + " USDC. Ini bukan deposit wallet dan bukan PnL.");
     await loadState();
   } catch (error) {
-    setMsg("balanceMsg", error.friendly || error.message || "Gagal menambah saldo simulasi.", true);
+    setMsg("balanceMsg", getErrorMessage(error, "Gagal menambah saldo simulasi."), true);
   } finally {
     balanceFundingInProgress.delete(chain);
     renderBalances();
   }
 }
 function setWalletStatus(message, isError) {
-  const el = $("walletStatus");
-  el.textContent = message;
-  el.classList.toggle("error", !!isError);
+  setStatusText("walletStatus", message, isError);
 }
 function renderBrowserWallet() {
   $("walletAddress").textContent = walletAddress ? walletAddress.slice(0, 6) + "…" + walletAddress.slice(-4) : "—";
@@ -448,7 +617,7 @@ async function refreshBrowserWallet() {
   } catch (e) {
     walletNativeBalance = null;
     renderBrowserWallet();
-    setWalletStatus("Gagal membaca jaringan/saldo: " + (e && e.message ? e.message : "provider error"), true);
+    setWalletStatus("Gagal membaca jaringan/saldo: " + getErrorMessage(e, "provider error"), true);
   }
 }
 async function connectBrowserWallet() {
@@ -467,7 +636,7 @@ async function connectBrowserWallet() {
     setWalletStatus("Wallet terhubung. Memeriksa Base Mainnet…");
     await refreshBrowserWallet();
   } catch (e) {
-    setWalletStatus(e && e.code === 4001 ? "Permintaan koneksi ditolak di wallet." : "Koneksi gagal: " + (e && e.message ? e.message : "provider error"), true);
+    setWalletStatus(e && e.code === 4001 ? "Permintaan koneksi ditolak di wallet." : "Koneksi gagal: " + getErrorMessage(e, "provider error"), true);
   } finally {
     button.disabled = false;
     renderBrowserWallet();
@@ -493,10 +662,10 @@ async function switchToBaseMainnet() {
           }],
         });
       } catch (addError) {
-        setWalletStatus("Gagal menambahkan Base Mainnet: " + (addError.message || "wallet error"), true);
+        setWalletStatus("Gagal menambahkan Base Mainnet: " + getErrorMessage(addError, "wallet error"), true);
       }
     } else {
-      setWalletStatus(e && e.code === 4001 ? "Permintaan pindah jaringan ditolak di wallet." : "Gagal pindah jaringan: " + (e && e.message ? e.message : "wallet error"), true);
+      setWalletStatus(e && e.code === 4001 ? "Permintaan pindah jaringan ditolak di wallet." : "Gagal pindah jaringan: " + getErrorMessage(e, "wallet error"), true);
     }
   } finally {
     button.disabled = false;
@@ -504,9 +673,7 @@ async function switchToBaseMainnet() {
   }
 }
 function setPoolCheckResult(message, isError) {
-  const el = $("poolCheckResult");
-  el.textContent = message;
-  el.classList.toggle("error", !!isError);
+  setStatusText("poolCheckResult", message, isError);
 }
 function addressAbiWord(address) {
   return address.slice(2).toLowerCase().padStart(64, "0");
@@ -525,7 +692,7 @@ function allBaseMainnetTokens() {
   const seen = new Set();
   return BASE_MAINNET_TOKENS.concat(listedBaseMainnetTokens, importedBaseMainnetTokens).filter((token) => {
     const address = String(token.address || "");
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address) || seen.has(address.toLowerCase())) return false;
+    if (!EVM_ADDRESS_PATTERN.test(address) || seen.has(address.toLowerCase())) return false;
     seen.add(address.toLowerCase());
     return true;
   });
@@ -534,21 +701,21 @@ async function loadBaseMainnetTokenList() {
   const status = $("tokenPickerListStatus");
   if (status) status.textContent = baseMainnetTokenListStatus;
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 10000);
+  const timeout = window.setTimeout(() => controller.abort(), TOKEN_LIST_TIMEOUT_MS);
   try {
     const response = await fetch(BASE_MAINNET_TOKEN_LIST_URL, { signal: controller.signal, cache: "no-cache" });
     if (!response.ok) throw new Error("Daftar token tidak tersedia (HTTP " + response.status + ").");
     const entries = await response.json();
     if (!Array.isArray(entries)) throw new Error("Format daftar token tidak valid.");
     listedBaseMainnetTokens = entries.filter((token) => token && token.chainId === 8453 &&
-      /^0x[a-fA-F0-9]{40}$/.test(String(token.address || "")) &&
+      EVM_ADDRESS_PATTERN.test(String(token.address || "")) &&
       typeof token.symbol === "string" && token.symbol.length > 0 && token.symbol.length <= 32 &&
       typeof token.name === "string" && token.name.length > 0 && token.name.length <= 80 &&
-      Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 36)
+      Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= MAX_TOKEN_DECIMALS)
       .map((token) => ({ symbol: token.symbol, name: token.name, address: token.address, decimals: token.decimals }));
     baseMainnetTokenListStatus = listedBaseMainnetTokens.length + " token Base dari Uniswap Default Token List. Token list bukan verifikasi keamanan atau likuiditas.";
   } catch (error) {
-    baseMainnetTokenListStatus = "Daftar online gagal dimuat; token bawaan dan token yang di-import tetap tersedia. " + (error.name === "AbortError" ? "Koneksi timeout." : error.message);
+    baseMainnetTokenListStatus = "Daftar online gagal dimuat; token bawaan dan token yang di-import tetap tersedia. " + (error.name === "AbortError" ? "Koneksi timeout." : getErrorMessage(error));
   } finally {
     window.clearTimeout(timeout);
     const previousA = $("poolTokenA").value;
@@ -680,7 +847,7 @@ async function importBaseMainnetToken() {
     status.classList.toggle("error", !!isError);
   };
   if (!walletProvider || !walletAddress) return setStatus("Hubungkan wallet terlebih dahulu.", true);
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return setStatus("Masukkan alamat kontrak EVM yang valid.", true);
+  if (!EVM_ADDRESS_PATTERN.test(address)) return setStatus("Masukkan alamat kontrak EVM yang valid.", true);
   button.disabled = true;
   setStatus("Memverifikasi kontrak dan metadata token di Base Mainnet…");
   try {
@@ -698,7 +865,7 @@ async function importBaseMainnetToken() {
       baseMainnetCall(address, "0x313ce567"),
     ]);
     const decimals = Number(BigInt("0x" + abiWord(decimalsResult, 0)));
-    if (!Number.isInteger(decimals) || decimals > 36) throw new Error("Decimals token tidak valid atau di luar batas dukungan.");
+    if (!Number.isInteger(decimals) || decimals > MAX_TOKEN_DECIMALS) throw new Error("Decimals token tidak valid atau di luar batas dukungan.");
     const [balanceResult, allowanceResult] = await Promise.all([
       baseMainnetCall(address, "0x70a08231" + addressAbiWord(expectedAccount)),
       baseMainnetCall(address, "0xdd62ed3e" + addressAbiWord(expectedAccount) + addressAbiWord(BASE_MAINNET_UNISWAP_V3_ROUTER)),
@@ -719,7 +886,7 @@ async function importBaseMainnetToken() {
     $("customTokenAddress").value = "";
     setStatus("Token berhasil diverifikasi dan ditambahkan untuk tab ini. Pilih token dari menu.");
   } catch (e) {
-    setStatus(e && e.message ? e.message : "Gagal memverifikasi token pada RPC Base Mainnet.", true);
+    setStatus(getErrorMessage(e, "Gagal memverifikasi token pada RPC Base Mainnet."), true);
   } finally {
     button.disabled = false;
   }
@@ -727,6 +894,11 @@ async function importBaseMainnetToken() {
 async function baseMainnetCall(to, data) {
   return walletProvider.request({ method: "eth_call", params: [{ to, data }, "latest"] });
 }
+
+/**
+ * Verifies a selected pair against the fixed Uniswap V3 factory on Base Mainnet.
+ * Reads RPC state only and stores a quote context after all selections are revalidated.
+ */
 async function checkBaseMainnetPool() {
   const button = $("poolCheckBtn");
   baseMainnetPoolContext = null;
@@ -737,11 +909,10 @@ async function checkBaseMainnetPool() {
   const tokenB = $("poolTokenB").value.trim();
   const fee = Number($("poolFeeTier").value);
   const checkAccount = walletAddress.toLowerCase();
-  const addressPattern = /^0x[a-fA-F0-9]{40}$/;
   if (!walletProvider || !walletAddress) return setPoolCheckResult("Hubungkan wallet terlebih dahulu.", true);
-  if (!addressPattern.test(tokenA) || !addressPattern.test(tokenB)) return setPoolCheckResult("Masukkan dua alamat kontrak ERC-20 yang valid.", true);
+  if (!EVM_ADDRESS_PATTERN.test(tokenA) || !EVM_ADDRESS_PATTERN.test(tokenB)) return setPoolCheckResult("Masukkan dua alamat kontrak ERC-20 yang valid.", true);
   if (tokenA.toLowerCase() === tokenB.toLowerCase()) return setPoolCheckResult("Token A dan Token B harus berbeda.", true);
-  if (![500, 3000, 10000].includes(fee)) return setPoolCheckResult("Fee tier tidak valid.", true);
+  if (!SUPPORTED_POOL_FEES.has(fee)) return setPoolCheckResult("Fee tier tidak valid.", true);
   button.disabled = true;
   setPoolCheckResult("Memeriksa chain dan factory Uniswap V3 Base Mainnet…");
   try {
@@ -773,7 +944,7 @@ async function checkBaseMainnetPool() {
     ]);
     const decimals0 = Number(BigInt("0x" + abiWord(decimals0Result, 0)));
     const decimals1 = Number(BigInt("0x" + abiWord(decimals1Result, 0)));
-    if (decimals0 > 36 || decimals1 > 36) throw new Error("Decimals token di luar batas yang didukung.");
+    if (decimals0 > MAX_TOKEN_DECIMALS || decimals1 > MAX_TOKEN_DECIMALS) throw new Error("Decimals token di luar batas yang didukung.");
     walletChainId = String(await walletProvider.request({ method: "eth_chainId" }));
     if (walletChainId.toLowerCase() !== BASE_MAINNET_CHAIN_ID) throw new Error("Jaringan berubah saat pemeriksaan. Ulangi di Base Mainnet.");
     const slot0Body = String(slot0Result || "").replace(/^0x/, "");
@@ -808,7 +979,7 @@ async function checkBaseMainnetPool() {
       "\nRead-only call; bukan quote mint/eksekusi dan tidak ada transaksi dikirim.",
     );
   } catch (e) {
-    setPoolCheckResult(e && e.message ? e.message : "Gagal membaca pool dari RPC wallet.", true);
+    setPoolCheckResult(getErrorMessage(e, "Gagal membaca pool dari RPC wallet."), true);
   } finally {
     button.disabled = false;
     renderBrowserWallet();
@@ -834,6 +1005,10 @@ function tokenUnitsToDecimal(units, decimals) {
   const visible = fraction.slice(0, Math.min(decimals, 18)).replace(/0+$/, "");
   return visible ? whole.toString() + "." + visible : whole.toString();
 }
+/**
+ * Requests a read-only exact-input quote and captures the validated account,
+ * balance, allowance, slippage, and pool context required by later actions.
+ */
 async function quoteBaseMainnetSwap() {
   const button = $("poolQuoteBtn");
   const context = baseMainnetPoolContext;
@@ -860,9 +1035,9 @@ async function quoteBaseMainnetSwap() {
   try {
     amountIn = decimalToTokenUnits(amountText, inputDecimals);
   } catch (e) {
-    return setPoolQuoteResult(e.message, true);
+    return setPoolQuoteResult(getErrorMessage(e), true);
   }
-  if (![50, 100, 200, 500].includes(slippageBps)) return setPoolQuoteResult("Batas slippage tidak valid.", true);
+  if (!SUPPORTED_SLIPPAGE_BPS.has(slippageBps)) return setPoolQuoteResult("Batas slippage tidak valid.", true);
   button.disabled = true;
   setPoolQuoteResult("Meminta quote exact-input ke QuoterV2 Base Mainnet…");
   try {
@@ -920,7 +1095,7 @@ async function quoteBaseMainnetSwap() {
     );
   } catch (e) {
     clearBaseMainnetSwapQuote("Quote gagal. Buat quote baru sebelum transaksi.");
-    setPoolQuoteResult(e && e.message ? e.message : "QuoterV2 gagal menghitung quote untuk pool/jumlah ini.", true);
+    setPoolQuoteResult(getErrorMessage(e, "QuoterV2 gagal menghitung quote untuk pool/jumlah ini."), true);
   } finally {
     button.disabled = !baseMainnetPoolContext;
     renderBrowserWallet();
@@ -937,7 +1112,7 @@ async function currentBaseMainnetAccount(expectedAccount) {
 function requireFreshSwapQuote() {
   const q = baseMainnetSwapQuote;
   if (!q || !baseMainnetPoolContext || q.context !== baseMainnetPoolContext) throw new Error("Buat quote swap baru terlebih dahulu.");
-  if (Date.now() - q.createdAt > 120000) {
+  if (Date.now() - q.createdAt > SWAP_QUOTE_TTL_MS) {
     clearBaseMainnetSwapQuote("Quote kedaluwarsa setelah 2 menit. Buat quote baru.");
     throw new Error("Quote kedaluwarsa. Buat quote baru.");
   }
@@ -946,6 +1121,10 @@ function requireFreshSwapQuote() {
       q.slippageBps !== Number($("swapSlippage").value)) throw new Error("Akun, jumlah, arah, atau slippage berubah. Buat quote baru.");
   return q;
 }
+/**
+ * Sends one explicitly confirmed Base Mainnet transaction and polls its receipt.
+ * @returns {Promise<{hash: string, receipt: object|null}>}
+ */
 async function sendBaseMainnetTransaction(to, data, description, expectedAccount) {
   if (!$("mainnetRiskAcknowledged").checked) throw new Error("Centang pengakuan risiko Base Mainnet sebelum mengirim transaksi dengan aset nyata.");
   const from = await currentBaseMainnetAccount(expectedAccount);
@@ -964,9 +1143,9 @@ async function sendBaseMainnetTransaction(to, data, description, expectedAccount
   if (baseMainnetSwapQuote && baseMainnetSwapQuote.account === expectedAccount.toLowerCase()) requireFreshSwapQuote();
   const hash = await walletProvider.request({ method: "eth_sendTransaction", params: [{ ...tx,
     gas: "0x" + gasLimit.toString(16), gasPrice: "0x" + gasPrice.toString(16), chainId: BASE_MAINNET_CHAIN_ID }] });
-  if (!/^0x[a-fA-F0-9]{64}$/.test(String(hash))) throw new Error("Wallet tidak mengembalikan transaction hash yang valid.");
+  if (!TRANSACTION_HASH_PATTERN.test(String(hash))) throw new Error("Wallet tidak mengembalikan transaction hash yang valid.");
   setSwapTxResult("Transaksi dikirim · menunggu konfirmasi jaringan…", false, hash);
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < TRANSACTION_RECEIPT_ATTEMPTS; attempt += 1) {
     const receipt = await walletProvider.request({ method: "eth_getTransactionReceipt", params: [hash] });
     if (receipt) {
       if (receipt.status && BigInt(receipt.status) === 0n) {
@@ -976,7 +1155,7 @@ async function sendBaseMainnetTransaction(to, data, description, expectedAccount
       setSwapTxResult("Transaksi terkonfirmasi di Base Mainnet.", false, hash);
       return { hash, receipt };
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await delay(TRANSACTION_RECEIPT_POLL_MS);
   }
   return { hash, receipt: null };
 }
@@ -1021,7 +1200,7 @@ async function approveBaseMainnetSwap() {
     updateMainnetSwapButtons();
     setSwapApprovalStatus("Approval terkonfirmasi untuk jumlah tepat. Periksa kembali quote, lalu klik Swap.");
   } catch (e) {
-    setSwapApprovalStatus(e && e.message ? e.message : "Approval gagal.", true);
+    setSwapApprovalStatus(getErrorMessage(e, "Approval gagal."), true);
     if (e && e.code === 4001) setSwapTxResult("Permintaan transaksi ditolak di wallet.", true);
   } finally {
     updateMainnetSwapButtons();
@@ -1059,28 +1238,24 @@ async function executeBaseMainnetSwap() {
     setSwapApprovalStatus("Quote dibatalkan setelah transaksi dikirim. Buat quote baru untuk swap berikutnya.");
     await refreshBrowserWallet();
   } catch (e) {
-    setSwapApprovalStatus(e && e.message ? e.message : "Swap gagal.", true);
+    setSwapApprovalStatus(getErrorMessage(e, "Swap gagal."), true);
     if (e && e.code === 4001) setSwapTxResult("Permintaan swap ditolak di wallet.", true);
   } finally {
     updateMainnetSwapButtons();
   }
 }
 function setPoolQuoteResult(message, isError) {
-  const el = $("poolQuoteResult");
-  el.textContent = message;
-  el.classList.toggle("error", !!isError);
+  setStatusText("poolQuoteResult", message, isError);
 }
 function setSwapApprovalStatus(message, isError) {
-  const el = $("swapApprovalStatus");
-  el.textContent = message;
-  el.classList.toggle("error", !!isError);
+  setStatusText("swapApprovalStatus", message, isError);
 }
 function setSwapTxResult(message, isError, hash) {
   const el = $("swapTxResult");
   const link = $("swapTxLink");
   el.textContent = message;
   el.classList.toggle("error", !!isError);
-  if (hash && /^0x[a-fA-F0-9]{64}$/.test(hash)) {
+  if (hash && TRANSACTION_HASH_PATTERN.test(hash)) {
     link.href = "https://basescan.org/tx/" + hash;
     link.hidden = false;
   } else {
@@ -1091,7 +1266,7 @@ function setSwapTxResult(message, isError, hash) {
 function updateMainnetSwapButtons() {
   const quote = baseMainnetSwapQuote;
   const acknowledged = $("mainnetRiskAcknowledged").checked;
-  const fresh = quote && Date.now() - quote.createdAt <= 120000 && quote.account === walletAddress.toLowerCase() && walletChainId.toLowerCase() === BASE_MAINNET_CHAIN_ID;
+  const fresh = quote && Date.now() - quote.createdAt <= SWAP_QUOTE_TTL_MS && quote.account === walletAddress.toLowerCase() && walletChainId.toLowerCase() === BASE_MAINNET_CHAIN_ID;
   const enoughBalance = fresh && quote.tokenBalance >= quote.amountIn;
   const enoughAllowance = fresh && quote.allowance >= quote.amountIn;
   $("swapApproveBtn").disabled = !acknowledged || !enoughBalance || enoughAllowance;
@@ -1196,7 +1371,7 @@ async function doTrade(side) {
     setMsg("tradeMsg", (side === "buy" ? "Buy" : "Sell") + " simulasi " + symbol + " sebesar " + fmtMoney(amount) + " berhasil di " + chain + ".");
     await loadState();
   } catch (e) {
-    setMsg("tradeMsg", e.friendly || e.message, true);
+    setMsg("tradeMsg", getErrorMessage(e), true);
   }
 }
 
@@ -1208,6 +1383,46 @@ function posCategory(p) {
   if (p.replacedBy || p.closeReason === "rebalance") return "leftover";
   return "closed";
 }
+
+/** Calculates unrounded position PnL without reading or mutating UI state. */
+function rawPositionPnl(position) {
+  if (position.status !== "open") return Number(position.closePnl) || 0;
+  const value = Number(position.value) || 0;
+  const fees = Number(position.fees) || 0;
+  const rewards = Number(position.rewards) || 0;
+  const amount = Number(position.amount) || 0;
+  return value + fees + rewards - amount;
+}
+
+/** Matches the two-decimal display convention used by position cards and tables. */
+function positionPnl(position) {
+  const pnl = rawPositionPnl(position);
+  return position.status === "open" ? round2Client(pnl) : pnl;
+}
+
+/**
+ * Applies Range Book filters and ordering as a pure transformation.
+ * @param {object[]} positions Source positions.
+ * @param {{status: string, chain: string, query: string, order: string}} filters
+ * @returns {object[]} A new filtered and sorted array.
+ */
+function filterAndSortPositions(positions, filters) {
+  if (filters.status === "view") return [];
+  const normalizedQuery = String(filters.query || "").trim().toLocaleLowerCase("id-ID");
+  const filtered = positions.filter((position) => {
+    if (posCategory(position) !== filters.status) return false;
+    if (filters.chain !== "ALL" && position.chain !== filters.chain) return false;
+    if (!normalizedQuery) return true;
+    return [position.symbol, position.pair, position.chain, position.address, position.poolAddress]
+      .some((value) => String(value || "").toLocaleLowerCase("id-ID").includes(normalizedQuery));
+  });
+  return filtered.sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt || left.closedAt || "") || 0;
+    const rightTime = Date.parse(right.createdAt || right.closedAt || "") || 0;
+    return filters.order === "oldest" ? leftTime - rightTime : rightTime - leftTime;
+  });
+}
+
 function renderChainBar() {
   const bar = $("chainBar");
   if (!bar || !deskState) return;
@@ -1249,7 +1464,7 @@ function renderTpSlStrip() {
 function renderPositionTable(positions) {
   const rows = positions.map((p) => {
     const live = p.status === "open";
-    const pnl = live ? round2Client((Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)) : Number(p.closePnl) || 0;
+    const pnl = positionPnl(p);
     const actions = live
       ? '<button type="button" class="text-btn" data-act="claim" data-id="' + esc(p.id) + '">Claim</button> <button type="button" class="text-btn" data-act="close" data-id="' + esc(p.id) + '">Close</button>'
       : "—";
@@ -1262,6 +1477,7 @@ function attachPositionActions(list) {
     btn.addEventListener("click", () => handlePositionAction(btn.dataset.act, btn.dataset.id, btn));
   });
 }
+/** Renders the Range Book from canonical state and the current view filters. */
 function renderPositions() {
   if (!deskState) return;
   const list = $("positionsList");
@@ -1284,13 +1500,11 @@ function renderPositions() {
     renderDeskCalendar();
     return;
   }
-  let shown = posStatusFilter === "view" ? [] : positions.filter((p) => posCategory(p) === posStatusFilter && (chainFilter === "ALL" || p.chain === chainFilter));
-  const query = posSearchQuery.trim().toLocaleLowerCase("id-ID");
-  if (query) shown = shown.filter((p) => [p.symbol, p.pair, p.chain, p.address, p.poolAddress].some((v) => String(v || "").toLocaleLowerCase("id-ID").includes(query)));
-  shown.sort((a, b) => {
-    const ta = Date.parse(a.createdAt || a.closedAt || "") || 0;
-    const tb = Date.parse(b.createdAt || b.closedAt || "") || 0;
-    return posSortOrder === "oldest" ? ta - tb : tb - ta;
+  const shown = filterAndSortPositions(positions, {
+    status: posStatusFilter,
+    chain: chainFilter,
+    query: posSearchQuery,
+    order: posSortOrder,
   });
   $("positionsCount").textContent = posStatusFilter === "view"
     ? "View Yanman · read-only · data profil belum terhubung"
@@ -1320,10 +1534,7 @@ function renderPositions() {
     .map((p) => {
       const live = p.status === "open";
       const fees = (Number(p.fees) || 0) + (Number(p.rewards) || 0);
-      const upnl =
-        live ? round2Client(p.value + fees - p.amount)
-        : p.closePnl != null ? p.closePnl
-        : 0;
+      const upnl = positionPnl(p);
       const pnlPct = Number(p.amount) > 0 ? round2Client((upnl / Number(p.amount)) * 100) : 0;
       const movePct = p.entryPrice > 0 ? round2Client((p.currentPrice / p.entryPrice - 1) * 100) : 0;
       const isDlmm = p.product === "DLMM" && p.lowerBin != null && p.upperBin != null;
@@ -1379,7 +1590,7 @@ function renderPositions() {
         .join(" · ");
       return (
         '<article class="position-card" data-pos="' +
-        p.id +
+        esc(p.id) +
         '">' +
         '<div class="pos-head">' +
         '<span class="pos-avatar">' +
@@ -1468,17 +1679,17 @@ function renderPositions() {
         '<div class="pos-actions">' +
         (live ?
           '<button type="button" class="text-btn" data-act="claim" data-id="' +
-          p.id +
+          esc(p.id) +
           '">Claim</button>' +
           '<button type="button" class="text-btn" data-act="rebalance" data-id="' +
-          p.id +
+          esc(p.id) +
           '">Rebalance</button>' +
           '<button type="button" class="text-btn" data-act="close" data-id="' +
-          p.id +
+          esc(p.id) +
           '">Close</button>'
         : "") +
         '<button type="button" class="text-btn danger" data-act="askdelete" data-id="' +
-        p.id +
+        esc(p.id) +
         '">Hapus</button>' +
         '</div></div><div class="delete-slot"></div>' +
         "</article>"
@@ -1505,7 +1716,7 @@ async function handlePositionAction(act, id, btn) {
         showToast("Posisi " + (r.pair || "") + " dihapus (" + r.removedLedgerRows + " baris ledger dibersihkan).");
         await loadState();
       } catch (e) {
-        showToast(e.friendly || e.message, true);
+        showToast(getErrorMessage(e), true);
       }
     });
     slot.querySelector('[data-del="no"]').addEventListener("click", () => {
@@ -1529,7 +1740,7 @@ async function handlePositionAction(act, id, btn) {
     }
     await loadState();
   } catch (e) {
-    showToast(e.friendly || e.message, true);
+    showToast(getErrorMessage(e), true);
   }
 }
 
@@ -1648,6 +1859,7 @@ function renderAgentLogs(elId, agentName) {
 
 /* ---------------- Realtime (tetap 5 detik, tanpa animasi) ---------------- */
 
+/** Fetches one realtime snapshot and updates portfolio/ticker UI. */
 async function refreshRealtime() {
   try {
     const data = await api("/api/realtime");
@@ -1655,7 +1867,7 @@ async function refreshRealtime() {
     processRealtimeNotifications(data);
     const timeStr = new Date(data.lastUpdated).toLocaleTimeString("id-ID");
     $("rtValue").textContent = fmtMoney(data.portfolioValue);
-    const pnlPctTotal = round2Client((data.totalPnl / 5000) * 100);
+    const pnlPctTotal = round2Client((data.totalPnl / SIMULATED_STARTING_CAPITAL_USD) * 100);
     $("rtPnl").textContent = (data.totalPnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(data.totalPnl)) + " (" + (pnlPctTotal >= 0 ? "+" : "") + pnlPctTotal.toFixed(2) + "%)";
     $("rtPnl").className = data.totalPnl >= 0 ? "pos" : "neg";
     $("stripUpdated").textContent = timeStr;
@@ -1675,17 +1887,17 @@ async function refreshRealtime() {
       $("rtClosed").textContent = "Auto TP/SL menutup: " + data.closedByTpSl.map((c) => c.symbol + " (" + c.reason + ")").join(", ");
       await loadState();
     }
-    rtSecondsLeft = 5;
+    rtSecondsLeft = REALTIME_INTERVAL_SECONDS;
   } catch (e) {
-    setMsg("rtMsg", "Realtime gagal dimuat: " + (e.friendly || e.message), true);
+    setMsg("rtMsg", "Realtime gagal dimuat: " + getErrorMessage(e), true);
   }
 }
 function startRealtime() {
   stopRealtime();
-  rtSecondsLeft = 5;
+  rtSecondsLeft = REALTIME_INTERVAL_SECONDS;
   rtTimer = setInterval(() => {
     if (!rtPaused) liveTick(false);
-  }, 5000);
+  }, REALTIME_INTERVAL_MS);
   rtCountdownTimer = setInterval(() => {
     const el = $("rtStatus");
     if (!el) return;
@@ -1699,7 +1911,7 @@ function startRealtime() {
     }
     rtSecondsLeft = Math.max(0, rtSecondsLeft - 1);
     el.textContent = rtSecondsLeft + " dtk";
-  }, 1000);
+  }, REALTIME_COUNTDOWN_INTERVAL_MS);
 }
 function stopRealtime() {
   if (rtTimer) clearInterval(rtTimer);
@@ -1735,6 +1947,10 @@ function activeTabName() {
   const p = document.querySelector(".tab-panel.active");
   return p ? p.id.replace("tab-", "") : "desk";
 }
+/**
+ * Runs the shared polling cycle and refreshes only the active, safe-to-update tab.
+ * Concurrent cycles are collapsed through `liveTickBusy`.
+ */
 async function liveTick(manual) {
   if (!manual && rtPaused) return;
   if (liveTickBusy) return;
@@ -1749,10 +1965,8 @@ async function liveTick(manual) {
     if (!liveGuardBlocked()) {
       const tab = activeTabName();
       if (tab === "desk") await loadState();
-      else if (tab === "monthly") {
-        await renderMonthly();
-        if (!cardRecording) await renderCardPreview();
-      } else if (tab === "toplp") await loadCandidates(false);
+      else if (tab === "monthly") await refreshMonthlyView(!cardRecording);
+      else if (tab === "toplp") await loadCandidates(false);
       else if (tab === "copylp") {
         if (copySelectedPool) await loadPoolPositions();
         if (copyMonitorStarted) await runCopyMonitor(true);
@@ -1885,7 +2099,7 @@ async function searchLpTokens() {
   setMsg("lpMsg", "Mencari di DexScreener…");
   try {
     let pairs = [];
-    if (/^0x[0-9a-fA-F]{40}$/.test(q) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q)) {
+    if (EVM_ADDRESS_PATTERN.test(q) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q)) {
       const data = await api("/api/dex/token?address=" + encodeURIComponent(q));
       pairs = data.pairs || [];
     } else {
@@ -1899,7 +2113,7 @@ async function searchLpTokens() {
     renderSearchResults(pairs.slice(0, 12), true);
     setMsg("lpMsg", pairs.length ? "Klik hasil untuk memilih token." : "Tidak ada pair yang cocok.");
   } catch (e) {
-    setMsg("lpMsg", e.friendly || e.message, true);
+    setMsg("lpMsg", getErrorMessage(e), true);
   }
 }
 async function autopilotPick() {
@@ -1910,6 +2124,7 @@ async function autopilotPick() {
   pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
   return pairs[0] || null;
 }
+/** Validates Open LP form data, posts one simulation command, and reloads state. */
 async function openLp() {
   let sel = selectedToken;
   if (!sel) {
@@ -1923,7 +2138,7 @@ async function openLp() {
       selectToken(best, chainFromDexId(best.chainId));
       sel = selectedToken;
     } catch (e) {
-      setMsg("lpMsg", e.friendly || e.message, true);
+      setMsg("lpMsg", getErrorMessage(e), true);
       return;
     }
   }
@@ -1938,7 +2153,7 @@ async function openLp() {
     setMsg("lpMsg", "Nominal harus lebih dari 0.", true);
     return;
   }
-  if (!isFinite(minPct) || !isFinite(maxPct) || minPct <= -100 || maxPct <= minPct) {
+  if (!Number.isFinite(minPct) || !Number.isFinite(maxPct) || minPct <= -100 || maxPct <= minPct) {
     setMsg("lpMsg", "Range Min %/Max % tidak valid (Max % harus lebih besar dari Min %, dan Min % harus di atas −100%).", true);
     return;
   }
@@ -1974,11 +2189,16 @@ async function openLp() {
     setMsg("lpMsg", "Posisi LP " + r.position.symbol + " dibuka di " + r.position.chain + " sebesar " + fmtMoney(r.position.amount) + ".");
     await loadState();
   } catch (e) {
-    setMsg("lpMsg", e.friendly || e.message, true);
+    setMsg("lpMsg", getErrorMessage(e), true);
   }
 }
 
 /* ---------------- Monthly profit ---------------- */
+
+/** Loads one monthly ledger snapshot without mutating the DOM. */
+function fetchMonthlyData(month = currentMonth) {
+  return api("/api/monthly?month=" + encodeURIComponent(month));
+}
 
 function renderCalendarGrid(targetId, days, month) {
   const [y, m] = month.split("-").map(Number);
@@ -1997,16 +2217,17 @@ function renderCalendarGrid(targetId, days, month) {
 }
 async function renderDeskCalendar() {
   try {
-    const data = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+    const data = await fetchMonthlyData();
     const [y, m] = currentMonth.split("-").map(Number);
     $("deskCalendarMonth").textContent = new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
     renderCalendarGrid("deskCalendarGrid", data.days, currentMonth);
   } catch (e) {
-    $("deskCalendarGrid").innerHTML = '<p class="muted">Kalender belum dapat dimuat: ' + esc(e.friendly || e.message) + "</p>";
+    $("deskCalendarGrid").innerHTML = '<p class="muted">Kalender belum dapat dimuat: ' + esc(getErrorMessage(e)) + "</p>";
   }
 }
-async function renderMonthly() {
-  const data = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+/** Renders a monthly snapshot, fetching it only when one is not supplied. */
+async function renderMonthly(monthlyData) {
+  const data = monthlyData || await fetchMonthlyData();
   const [y, m] = currentMonth.split("-").map(Number);
   $("monthLabel").textContent = new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
   const t = data.totals;
@@ -2035,8 +2256,28 @@ async function renderMonthly() {
   return data;
 }
 
+/**
+ * Refreshes the calendar and optional card preview from the same API snapshot.
+ * Errors are rendered locally so event handlers do not create rejected promises.
+ */
+async function refreshMonthlyView(includeCardPreview = true) {
+  try {
+    const monthly = await fetchMonthlyData();
+    await renderMonthly(monthly);
+    if (includeCardPreview) await renderCardPreview(monthly);
+    return monthly;
+  } catch (error) {
+    setMsg("cardMsg", "Monthly Profit gagal dimuat: " + getErrorMessage(error), true);
+    return null;
+  }
+}
+
 /* ---------------- Card Studio (SATU renderer untuk preview + PNG + WebM) ---------------- */
 
+/**
+ * Draws one deterministic Monthly Recap frame onto the supplied canvas context.
+ * The only external reads are the selected background and brightness controls.
+ */
 function drawCard(ctx, W, H, monthly) {
   // Desain mengikuti kartu hosted (referensi screenshot Monthly Profit hosted):
   // bingkai oranye tipis, latar gelap ber-grid halus, logo oranye + wordmark
@@ -2189,15 +2430,25 @@ function drawCard(ctx, W, H, monthly) {
   ctx.lineWidth = 4;
   ctx.strokeRect(40, 40, W - 80, H - 80);
 }
-async function renderCardPreview() {
-  const monthly = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
+async function renderCardPreview(monthlyData) {
+  const monthly = monthlyData || await fetchMonthlyData();
   cardMonthlyCache = monthly;
   const canvas = $("cardCanvas");
-  drawCard(canvas.getContext("2d"), canvas.width, canvas.height, monthly);
+  const context = canvas && canvas.getContext("2d");
+  if (!canvas || !context) throw new Error("Canvas Card Studio tidak tersedia.");
+  drawCard(context, canvas.width, canvas.height, monthly);
   return monthly;
 }
+
+/** Refreshes the card preview without leaking a rejected event-handler promise. */
+function requestCardPreview() {
+  return renderCardPreview().catch((error) => {
+    setMsg("cardMsg", "Preview kartu gagal: " + getErrorMessage(error), true);
+    return null;
+  });
+}
 function startVideoPreviewLoop() {
-  if (videoPreviewRaf) return;
+  if (videoPreviewRaf !== null) return;
   const tick = () => {
     videoPreviewRaf = requestAnimationFrame(tick);
     // Preview video: gambar ulang frame video berjalan ke canvas preview
@@ -2211,69 +2462,103 @@ function startVideoPreviewLoop() {
   };
   tick();
 }
-async function downloadCard() {
-  const monthly = await api("/api/monthly?month=" + encodeURIComponent(currentMonth));
-  cardRecording = true;
-  const fileBase = "ReagenCorp-profit-" + currentMonth;
-  if (cardBg.type === "video" && cardBg.video) {
-    setMsg("cardMsg", "Merekam video card 10 detik (WebM HD, 12 Mbps)…");
-    const off = document.createElement("canvas");
-    off.width = 1600;
-    off.height = 1000;
-    const octx = off.getContext("2d");
-    const stream = off.captureStream(30);
-    const rec = new MediaRecorder(stream, { mimeType: "video/webm", videoBitsPerSecond: 12_000_000 });
-    const chunks = [];
-    rec.ondataavailable = (e) => {
-      if (e.data.size) chunks.push(e.data);
-    };
-    const done = new Promise((r) => {
-      rec.onstop = r;
-    });
-    const video = cardBg.video;
-    const wasPaused = video.paused;
-    video.loop = true;
+
+/** Records a WebM card using the same frame renderer as the preview. */
+async function downloadVideoCard(monthly, fileBase) {
+  if (typeof MediaRecorder !== "function") throw new Error("Browser tidak mendukung perekaman WebM.");
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_WIDTH;
+  canvas.height = CARD_HEIGHT;
+  const context = canvas.getContext("2d");
+  if (!context || typeof canvas.captureStream !== "function") throw new Error("Browser tidak mendukung ekspor video dari canvas.");
+
+  const stream = canvas.captureStream(CARD_VIDEO_FPS);
+  const recorder = new MediaRecorder(stream, { mimeType: "video/webm", videoBitsPerSecond: CARD_VIDEO_BITRATE });
+  const chunks = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size) chunks.push(event.data);
+  };
+  const recordingStopped = new Promise((resolve, reject) => {
+    recorder.onstop = resolve;
+    recorder.onerror = (event) => reject(event.error || new Error("Perekaman WebM gagal."));
+  });
+  const video = cardBg.video;
+  const wasPaused = video.paused;
+  const wasLooping = video.loop;
+  video.loop = true;
+
+  try {
     try {
       await video.play();
     } catch (_) {
-      /* tetap rekam frame diam */
+      // A paused source is still exported as a static video frame.
     }
-    rec.start(200);
-    const started = performance.now();
-    await new Promise((resolve) => {
-      const tick = () => {
-        drawCard(octx, 1600, 1000, monthly);
-        if (performance.now() - started < 10000) requestAnimationFrame(tick);
+    recorder.start(200);
+    const startedAt = performance.now();
+    await new Promise((resolve, reject) => {
+      const drawFrame = () => {
+        try {
+          drawCard(context, CARD_WIDTH, CARD_HEIGHT, monthly);
+        } catch (error) {
+          reject(error);
+          return;
+        }
+        if (performance.now() - startedAt < CARD_RECORDING_DURATION_MS) requestAnimationFrame(drawFrame);
         else resolve();
       };
-      tick();
+      drawFrame();
     });
-    rec.stop();
-    await done;
+    recorder.stop();
+    await recordingStopped;
+  } finally {
+    if (recorder.state !== "inactive") recorder.stop();
+    stream.getTracks().forEach((track) => track.stop());
     if (wasPaused) video.pause();
-    const blob = new Blob(chunks, { type: "video/webm" });
-    triggerDownload(URL.createObjectURL(blob), fileBase + ".webm");
-    setMsg("cardMsg", "Video card diunduh: " + fileBase + ".webm");
-    cardRecording = false;
-    return;
+    video.loop = wasLooping;
   }
-  const off = document.createElement("canvas");
-  off.width = 1600;
-  off.height = 1000;
-  drawCard(off.getContext("2d"), 1600, 1000, monthly);
-  const a = document.createElement("a");
-  a.download = fileBase + ".png";
-  a.href = off.toDataURL("image/png");
-  a.click();
+
+  const blob = new Blob(chunks, { type: "video/webm" });
+  triggerDownload(URL.createObjectURL(blob), fileBase + ".webm");
+  setMsg("cardMsg", "Video card diunduh: " + fileBase + ".webm");
+}
+
+/** Exports one Monthly Recap frame as a PNG. */
+function downloadImageCard(monthly, fileBase) {
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_WIDTH;
+  canvas.height = CARD_HEIGHT;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Browser tidak mendukung ekspor gambar dari canvas.");
+  drawCard(context, CARD_WIDTH, CARD_HEIGHT, monthly);
+  const link = document.createElement("a");
+  link.download = fileBase + ".png";
+  link.href = canvas.toDataURL("image/png");
+  link.click();
   setMsg("cardMsg", "Kartu diunduh: " + fileBase + ".png");
-  cardRecording = false;
+}
+
+/** Coordinates monthly data loading and export while always restoring recording state. */
+async function downloadCard() {
+  const monthly = await fetchMonthlyData();
+  const fileBase = "ReagenCorp-profit-" + currentMonth;
+  cardRecording = true;
+  try {
+    if (cardBg.type === "video" && cardBg.video) {
+      setMsg("cardMsg", "Merekam video card 10 detik (WebM HD, 12 Mbps)…");
+      await downloadVideoCard(monthly, fileBase);
+      return;
+    }
+    downloadImageCard(monthly, fileBase);
+  } finally {
+    cardRecording = false;
+  }
 }
 function triggerDownload(url, name) {
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_MS);
 }
 function setBgInfo() {
   const info = $("bgInfo");
@@ -2286,6 +2571,97 @@ function setBgInfo() {
   info.textContent = "Background aktif: " + (cardBg.type === "image" ? "GAMBAR → ekspor PNG HD" : "VIDEO → ekspor WebM HD 10 detik") + " · file: " + cardBg.name;
   $("bgRemoveBtn").hidden = false;
   $("bgPlayBtn").hidden = cardBg.type !== "video";
+}
+
+/** Binds Monthly navigation and Card Studio media/export controls. */
+function bindMonthlyCardUi() {
+  $("monthPrev").addEventListener("click", () => shiftMonth(-1));
+  $("monthNext").addEventListener("click", () => shiftMonth(1));
+  $("monthToday").addEventListener("click", () => {
+    currentMonth = new Date().toISOString().slice(0, 7);
+    refreshMonthlyView($("tab-monthly").classList.contains("active"));
+  });
+
+  $("bgPickImageBtn").addEventListener("click", () => $("bgImageInput").click());
+  $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());
+  $("downloadCardBtnTop").addEventListener("click", () => {
+    downloadCard().catch((error) => setMsg("cardMsg", getErrorMessage(error), true));
+  });
+
+  $("bgImageInput").addEventListener("change", () => {
+    const file = $("bgImageInput").files[0];
+    if (!file) return;
+    clearBgMedia();
+    const objectUrl = URL.createObjectURL(file);
+    pendingCardMediaUrl = objectUrl;
+    const image = new Image();
+    image.onload = () => {
+      if (pendingCardMediaUrl !== objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      pendingCardMediaUrl = "";
+      cardBg = { type: "image", img: image, video: null, name: file.name, objectUrl };
+      setBgInfo();
+      requestCardPreview();
+    };
+    image.onerror = () => {
+      const isCurrentSelection = pendingCardMediaUrl === objectUrl;
+      if (isCurrentSelection) pendingCardMediaUrl = "";
+      URL.revokeObjectURL(objectUrl);
+      if (isCurrentSelection) setMsg("cardMsg", "Gambar background tidak dapat dibaca.", true);
+    };
+    image.src = objectUrl;
+  });
+
+  $("bgVideoInput").addEventListener("change", () => {
+    const file = $("bgVideoInput").files[0];
+    if (!file) return;
+    clearBgMedia();
+    const objectUrl = URL.createObjectURL(file);
+    pendingCardMediaUrl = objectUrl;
+    const video = $("bgVideoPreview");
+    video.onloadeddata = () => {
+      if (pendingCardMediaUrl !== objectUrl) return;
+      pendingCardMediaUrl = "";
+      cardBg = { type: "video", img: null, video, name: file.name, objectUrl };
+      setBgInfo();
+      requestCardPreview();
+      startVideoPreviewLoop();
+    };
+    video.onerror = () => {
+      if (pendingCardMediaUrl !== objectUrl) return;
+      pendingCardMediaUrl = "";
+      URL.revokeObjectURL(objectUrl);
+      video.removeAttribute("src");
+      setMsg("cardMsg", "Video background tidak dapat dibaca.", true);
+    };
+    video.src = objectUrl;
+  });
+
+  $("bgRemoveBtn").addEventListener("click", () => {
+    clearBgMedia();
+    $("bgImageInput").value = "";
+    $("bgVideoInput").value = "";
+    setBgInfo();
+    requestCardPreview();
+  });
+  $("bgPlayBtn").addEventListener("click", () => {
+    const video = cardBg.video || $("bgVideoPreview");
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch((error) => setMsg("cardMsg", "Video tidak dapat diputar: " + getErrorMessage(error), true));
+      return;
+    }
+    video.pause();
+  });
+  $("bgBrightness").addEventListener("input", () => {
+    $("brightnessVal").textContent = $("bgBrightness").value + "%";
+    requestCardPreview();
+  });
+  $("downloadCardBtn").addEventListener("click", () => {
+    downloadCard().catch((error) => setMsg("cardMsg", getErrorMessage(error), true));
+  });
 }
 
 /* ---------------- Settings ---------------- */
@@ -2347,9 +2723,7 @@ function renderByteChart() {
       const hasPnlSl = Number(p.slPnlPct) > 0;
       const hasPnlTp = Number(p.tpPnlPct) > 0;
       if (hasPnlSl || hasPnlTp) {
-        const currentPnl = p.status === "open"
-          ? (Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)
-          : Number(p.closePnl) || 0;
+        const currentPnl = rawPositionPnl(p);
         const currentPct = Number(p.amount) > 0 ? (currentPnl / Number(p.amount)) * 100 : 0;
         const lo = hasPnlSl ? -Number(p.slPnlPct) : Math.min(0, currentPct);
         const hi = hasPnlTp ? Number(p.tpPnlPct) : Math.max(0, currentPct);
@@ -2396,20 +2770,10 @@ function renderSora() {
   const positions = (deskState && deskState.positions) || [];
   const opens = positions.filter((p) => p.status === "open");
   const closed = positions.filter((p) => p.status === "closed" || p.status === "rebalanced");
-  const totalCapital = 5000;
+  const totalCapital = SIMULATED_STARTING_CAPITAL_USD;
   const allocated = round2Client(opens.reduce((s, p) => s + (Number(p.amount) || 0), 0));
   const remaining = round2Client(totalCapital - allocated);
-  const totalPnl = round2Client(
-    positions.reduce((s, p) => {
-      const fees = (Number(p.fees) || 0) + (Number(p.rewards) || 0);
-      return (
-        s +
-        (p.status === "open" ? (Number(p.value) || 0) + fees - (Number(p.amount) || 0)
-        : p.closePnl != null ? p.closePnl
-        : 0)
-      );
-    }, 0),
-  );
+  const totalPnl = round2Client(positions.reduce((sum, position) => sum + rawPositionPnl(position), 0));
   const wins = closed.filter((p) => (p.closePnl || 0) > 0).length;
   const winRate = closed.length ? Math.round((wins / closed.length) * 10000) / 100 : 0;
   const fees = round2Client(positions.reduce((s, p) => s + (Number(p.fees) || 0) + (Number(p.rewards) || 0), 0)) + (Number(deskState.claimedFeesTotal) || 0);
@@ -2440,7 +2804,7 @@ function renderSora() {
         " · risiko " +
         risk +
         " · uPnL " +
-        fmtMoney((Number(p.value) || 0) + (Number(p.fees) || 0) + (Number(p.rewards) || 0) - (Number(p.amount) || 0)) +
+        fmtMoney(rawPositionPnl(p)) +
         "</div>"
       );
     })
@@ -2476,7 +2840,7 @@ function renderSora() {
     "</div>" +
     "<h4>Alokasi per chain</h4>" +
     (chainRows.length ?
-      chainRows.map(([c, v]) => '<div class="log-row"><span class="chain-badge">' + c + "</span> " + fmtMoney(v) + " (" + (allocated > 0 ? Math.round((v / allocated) * 100) : 0) + "%)</div>").join("")
+      chainRows.map(([c, v]) => '<div class="log-row"><span class="chain-badge">' + esc(c) + "</span> " + fmtMoney(v) + " (" + (allocated > 0 ? Math.round((v / allocated) * 100) : 0) + "%)</div>").join("")
     : '<p class="muted">Belum ada alokasi.</p>') +
     "<h4>Concentration insights</h4>" +
     insights.map((i) => '<div class="log-row">' + esc(i) + "</div>").join("") +
@@ -2509,16 +2873,33 @@ function sparklineSvg(c) {
 function feeTvlCell(v) {
   return v == null ? "—" : fmtPct(v);
 }
-function discoverRows() {
-  let rows = allCandidates().slice();
-  if (discoverState.chain !== "ALL") rows = rows.filter((c) => c.chain === discoverState.chain);
-  if (discoverState.hideRisky) rows = rows.filter((c) => !(c.safety_score != null && c.safety_score < 50));
-  const tf = discoverState.tf;
-  if (discoverState.tab === "trending") rows.sort((a, b) => (b[TF_VOL[tf]] || 0) - (a[TF_VOL[tf]] || 0));
-  else if (discoverState.tab === "new") rows.sort((a, b) => (b.pair_created_at || 0) - (a.pair_created_at || 0));
-  else if (discoverState.tab === "feeTvl") rows.sort((a, b) => (b[TF_FEE[tf]] != null ? b[TF_FEE[tf]] : -1) - (a[TF_FEE[tf]] != null ? a[TF_FEE[tf]] : -1));
-  else if (discoverState.tab === "rising") rows.sort((a, b) => (b.fee_tvl_24h != null ? b.fee_tvl_24h : -1) - (a.fee_tvl_24h != null ? a.fee_tvl_24h : -1));
+/** Filters and ranks candidates without reading or mutating global candidate data. */
+function filterAndSortCandidates(candidates, state) {
+  let rows = candidates.slice();
+  if (state.chain !== "ALL") rows = rows.filter((candidate) => candidate.chain === state.chain);
+  if (state.hideRisky) rows = rows.filter((candidate) => !(candidate.safety_score != null && candidate.safety_score < 50));
+
+  const timeframe = state.tf;
+  if (state.tab === "trending") {
+    rows.sort((left, right) => (right[TF_VOL[timeframe]] || 0) - (left[TF_VOL[timeframe]] || 0));
+    return rows;
+  }
+  if (state.tab === "new") {
+    rows.sort((left, right) => (right.pair_created_at || 0) - (left.pair_created_at || 0));
+    return rows;
+  }
+  if (state.tab === "feeTvl") {
+    rows.sort((left, right) => (right[TF_FEE[timeframe]] ?? -1) - (left[TF_FEE[timeframe]] ?? -1));
+    return rows;
+  }
+  if (state.tab === "rising") {
+    rows.sort((left, right) => (right.fee_tvl_24h ?? -1) - (left.fee_tvl_24h ?? -1));
+  }
   return rows;
+}
+
+function discoverRows() {
+  return filterAndSortCandidates(allCandidates(), discoverState);
 }
 function renderDiscover() {
   const body = $("discoverBody");
@@ -2747,7 +3128,7 @@ async function copyCa(text, btn) {
     btn.textContent = ok ? "Tersalin ✓" : "Gagal menyalin";
     setTimeout(() => {
       btn.textContent = old;
-    }, 2000);
+    }, COPY_FEEDBACK_DURATION_MS);
   }
   if (!ok) showToast("Clipboard tidak tersedia di webview ini — salin alamat manual dari teks CA.", true);
 }
@@ -2829,7 +3210,7 @@ async function saveDd() {
     await loadState();
     renderDiscover();
   } catch (e) {
-    setMsg("ddMsg", e.friendly || e.message, true);
+    setMsg("ddMsg", getErrorMessage(e), true);
   }
 }
 async function loadCandidates(forceMsg) {
@@ -2840,7 +3221,7 @@ async function loadCandidates(forceMsg) {
     renderDiscover();
     if (forceMsg) setMsg("discMsg", "Kandidat diperbarui: " + allCandidates().length + " token (" + (candidatesData.recommendations || []).length + " berperingkat + " + (candidatesData.pending_candidates || []).length + " pending).");
   } catch (e) {
-    setMsg("discMsg", "Gagal memuat kandidat: " + (e.friendly || e.message), true);
+    setMsg("discMsg", "Gagal memuat kandidat: " + getErrorMessage(e), true);
   }
 }
 function openPoolFromDiscover(address) {
@@ -2851,6 +3232,7 @@ function openPoolFromDiscover(address) {
 
 /* ---------------- Copy LP ---------------- */
 
+/** Discovers available pools for one token address and selects the best first result. */
 async function discoverCopyLp() {
   const address = $("copyCaInput").value.trim();
   if (!address) {
@@ -2869,7 +3251,7 @@ async function discoverCopyLp() {
     if (copyDiscovery.meteoraPools.length) selectCopyPool(copyDiscovery.meteoraPools[0]);
     else if (copyDiscovery.dexPools.length) selectCopyPool(copyDiscovery.dexPools[0]);
   } catch (e) {
-    setMsg("copyMsg", e.friendly || e.message, true);
+    setMsg("copyMsg", getErrorMessage(e), true);
   }
 }
 function poolCardHtml(p, kind) {
@@ -2959,7 +3341,7 @@ async function applyZapRange(mode) {
       $("zapRangeInfo").textContent = "Range server dari volatilitas 24j + bin step " + (pool.binStep || 25) + ": bins " + r.lowerBin + " … +" + r.upperBin + " (step " + r.stepPct + "%/bin).";
       pool._range = r;
     } catch (e) {
-      setMsg("zapMsg", e.friendly || e.message, true);
+      setMsg("zapMsg", getErrorMessage(e), true);
     }
   } else {
     const presets = { both5: [-5, 5], both10: [-10, 10], below50: [-50, 0], below70: [-70, 0] };
@@ -3057,7 +3439,7 @@ async function zapOpen() {
     await loadState();
     loadPoolPositions();
   } catch (e) {
-    setMsg("zapMsg", e.friendly || e.message, true);
+    setMsg("zapMsg", getErrorMessage(e), true);
   }
 }
 async function loadPoolPositions() {
@@ -3113,11 +3495,11 @@ async function loadPoolPositions() {
             "<td>" +
             (p.status === "open" ?
               '<button type="button" data-pp="claim" data-id="' +
-              p.id +
+              esc(p.id) +
               '">Claim</button> <button type="button" class="secondary" data-pp="rebalance" data-id="' +
-              p.id +
+              esc(p.id) +
               '">Rebalance</button> <button type="button" class="secondary" data-pp="close" data-id="' +
-              p.id +
+              esc(p.id) +
               '">Close</button>'
             : "") +
             "</td></tr>",
@@ -3164,20 +3546,20 @@ async function runCopyMonitor(quiet) {
             esc(p.suggestion) +
             "</span> " +
             '<button type="button" class="secondary" data-mon="rebalance" data-id="' +
-            p.id +
+            esc(p.id) +
             '">Rebalance</button> ' +
             '<button type="button" class="secondary" data-mon="claim" data-id="' +
-            p.id +
+            esc(p.id) +
             '">Claim</button> ' +
             '<button type="button" class="secondary" data-mon="close" data-id="' +
-            p.id +
+            esc(p.id) +
             '">Close</button></div>',
         )
         .join("");
     out.querySelectorAll("[data-mon]").forEach((b) => b.addEventListener("click", () => handlePositionAction(b.dataset.mon, b.dataset.id, b).then(runCopyMonitor)));
     await loadState();
   } catch (e) {
-    out.innerHTML = '<p class="muted">Monitor gagal: ' + esc(e.friendly || e.message) + "</p>";
+    out.innerHTML = '<p class="muted">Monitor gagal: ' + esc(getErrorMessage(e)) + "</p>";
   }
 }
 
@@ -3192,7 +3574,7 @@ function renderLeaders() {
   const box = $("leaderList");
   const sel = $("kopiLeaderSelect");
   const currentSel = settings.copyTrading.leaderId || "";
-  sel.innerHTML = '<option value="">Otomatis — peringkat #1</option>' + list.map((l) => '<option value="' + l.id + '"' + (currentSel === l.id ? " selected" : "") + ">" + esc(l.label) + " (" + l.winrate + "%)</option>").join("");
+  sel.innerHTML = '<option value="">Otomatis — peringkat #1</option>' + list.map((l) => '<option value="' + esc(l.id) + '"' + (currentSel === l.id ? " selected" : "") + ">" + esc(l.label) + " (" + l.winrate + "%)</option>").join("");
   if (!list.length) {
     box.innerHTML = '<p class="muted">Watchlist kosong. Tambahkan leader pertama lewat formulir di atas — data yang kamu masukkan sendiri dari Smart LP/platform lain (input manual, bukan data live).</p>';
     return;
@@ -3223,10 +3605,10 @@ function renderLeaders() {
         (l.favoriteToken ? "<br>Token favorit: " + esc(l.favoriteToken) : "") +
         "</div>" +
         '<div class="actions"><button type="button" class="secondary" data-leader-edit="' +
-        l.id +
+        esc(l.id) +
         '">Edit</button>' +
         '<button type="button" class="secondary" data-leader-del="' +
-        l.id +
+        esc(l.id) +
         '">Hapus leader</button></div></div>',
     )
     .join("");
@@ -3239,7 +3621,7 @@ function renderLeaders() {
         renderLeaders();
         setMsg("leaderMsg", "Leader dihapus.");
       } catch (e) {
-        setMsg("leaderMsg", e.friendly || e.message, true);
+        setMsg("leaderMsg", getErrorMessage(e), true);
       }
     }),
   );
@@ -3290,7 +3672,7 @@ async function saveLeader() {
     renderLeaders();
     setMsg("leaderMsg", "Leader tersimpan (input manual — bukan data live).");
   } catch (e) {
-    setMsg("leaderMsg", e.friendly || e.message, true);
+    setMsg("leaderMsg", getErrorMessage(e), true);
   }
 }
 function fillKopiForm() {
@@ -3317,7 +3699,7 @@ async function runKopi() {
   try {
     await saveSettings();
   } catch (e) {
-    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(getErrorMessage(e)) + "</p>";
     return;
   }
   $("kopiRunOut").innerHTML = '<p class="muted">Kopi menjalankan copy (simulasi)…</p>';
@@ -3332,7 +3714,7 @@ async function runKopi() {
     renderLeaders();
     renderAgentLogs("kopiLogs", "Kopi");
   } catch (e) {
-    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    $("kopiRunOut").innerHTML = '<p class="muted">' + esc(getErrorMessage(e)) + "</p>";
   }
 }
 async function scanNaraV4Pools() {
@@ -3364,11 +3746,11 @@ async function scanNaraV4Pools() {
       if (window.confirm("Jalankan Auto Trading pool APR? Aplikasi hanya membuat posisi SIMULASI, bukan transaksi on-chain.")) runNara();
     });
   } catch (e) {
-    box.textContent = e.status === 404 && e.message === "Endpoint tidak ditemukan."
+    box.textContent = e && e.status === 404 && getErrorMessage(e) === "Endpoint tidak ditemukan."
       ? "Rute APR pool belum tersedia pada backend yang berjalan. Hentikan server lama lalu jalankan ulang dengan `npm start`."
-      : (e.details && e.details.failedNetworks && e.details.failedNetworks.length
-        ? (e.friendly || e.message) + " Network gagal: " + e.details.failedNetworks.map((n) => n.chain).join(", ") + "."
-        : e.friendly || e.message);
+      : (e && e.details && e.details.failedNetworks && e.details.failedNetworks.length
+        ? getErrorMessage(e) + " Network gagal: " + e.details.failedNetworks.map((n) => n.chain).join(", ") + "."
+        : getErrorMessage(e));
   }
 }
 
@@ -3377,7 +3759,7 @@ async function runNara() {
   try {
     await saveSettings();
   } catch (e) {
-    $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    $("naraRunOut").innerHTML = '<p class="muted">' + esc(getErrorMessage(e)) + "</p>";
     return;
   }
   $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara mencocokkan pool APR multi-network dengan kandidat yang lolos guardrail…" : "Nara memindai Top 10 agent API…") + "</p>";
@@ -3393,7 +3775,7 @@ async function runNara() {
     await loadState();
     renderAgentLogs("naraLogs", "Nara");
   } catch (e) {
-    $("naraRunOut").innerHTML = '<p class="muted">' + esc(e.friendly || e.message) + "</p>";
+    $("naraRunOut").innerHTML = '<p class="muted">' + esc(getErrorMessage(e)) + "</p>";
   }
 }
 
@@ -3401,10 +3783,11 @@ async function runNara() {
    Hanya berjalan bila Auto Trading LP aktif. Tidak membaca ulang form agar
    nilai yang sedang diedit pengguna tidak tertimpa. */
 
-const NARA_INTERVAL_MS = 5 * 60 * 1000;
+const NARA_INTERVAL_MS = 5 * 60_000;
 let naraTimer = null;
 let naraBusy = false;
 
+/** Runs one guarded Nara schedule tick without reading unsaved form edits. */
 async function naraAutoTick() {
   if (naraBusy || !settings || !settings.autoTrading.enabled) return;
   naraBusy = true;
@@ -3430,24 +3813,24 @@ function startNaraSchedule() {
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
-  if (name === "monthly") {
-    renderMonthly();
-    renderCardPreview();
-  }
+  if (name === "monthly") refreshMonthlyView();
   if (name === "toplp" && !candidatesData) loadCandidates(false);
 }
 function openAgentModal(name) {
   if (name === "nara") {
     fillNaraForm();
     $("naraModal").hidden = false;
+    return;
   }
   if (name === "byte") {
     fillByteForm();
     $("byteModal").hidden = false;
+    return;
   }
   if (name === "sora") {
     renderSora();
     $("soraModal").hidden = false;
+    return;
   }
   if (name === "kopi") {
     fillKopiForm();
@@ -3470,8 +3853,8 @@ function waitForGoogleIdentity() {
       const startedAt = Date.now();
       const check = () => {
         if (window.google && window.google.accounts && window.google.accounts.id) return resolve();
-        if (Date.now() - startedAt >= 15000) return reject(new Error("Google Sign-In gagal dimuat. Periksa koneksi internet lalu muat ulang."));
-        setTimeout(check, 100);
+        if (Date.now() - startedAt >= GOOGLE_IDENTITY_TIMEOUT_MS) return reject(new Error("Google Sign-In gagal dimuat. Periksa koneksi internet lalu muat ulang."));
+        setTimeout(check, GOOGLE_IDENTITY_POLL_MS);
       };
       check();
     }).catch((error) => {
@@ -3493,7 +3876,7 @@ async function renderGoogleSignIn() {
     const buttonWidth = Math.min(320, Math.max(120, Math.floor(button.clientWidth || 320)));
     window.google.accounts.id.renderButton(button, { theme: "filled_black", size: "large", shape: "pill", text: "continue_with", width: buttonWidth });
   } catch (error) {
-    $("authError").textContent = error.friendly || error.message;
+    $("authError").textContent = getErrorMessage(error);
   }
 }
 async function handleGoogleCredential(response) {
@@ -3513,7 +3896,7 @@ async function handleGoogleCredential(response) {
     await postJson("/api/auth/google", payload);
     location.href = "/";
   } catch (error) {
-    $("authError").textContent = error.friendly || error.message;
+    $("authError").textContent = getErrorMessage(error);
   }
 }
 function showAuth(message) {
@@ -3537,7 +3920,7 @@ function updateProfileAvatarPreview(source) {
 }
 async function compressProfileAvatar(file) {
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Pilih foto JPG, PNG, atau WebP.");
-  if (file.size > 8 * 1024 * 1024) throw new Error("Ukuran foto maksimal 8 MB sebelum dioptimalkan.");
+  if (file.size > MAX_PROFILE_IMAGE_BYTES) throw new Error("Ukuran foto maksimal 8 MB sebelum dioptimalkan.");
   const objectUrl = URL.createObjectURL(file);
   try {
     const image = new Image();
@@ -3557,7 +3940,7 @@ async function compressProfileAvatar(file) {
       for (const quality of [0.82, 0.72, 0.62, 0.52]) {
         const dataUrl = canvas.toDataURL("image/jpeg", quality);
         const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-        if (Math.ceil(base64.length * 0.75) <= 32 * 1024) return dataUrl;
+        if (Math.ceil(base64.length * 0.75) <= MAX_PROFILE_AVATAR_BYTES) return dataUrl;
       }
     }
     throw new Error("Foto tidak dapat dikompres di bawah batas 32 KB. Coba foto lain.");
@@ -3574,7 +3957,7 @@ function bindFollowButtons(container) {
         await renderSocialRoute();
       } catch (error) {
         button.disabled = false;
-        showToast(error.friendly || error.message, true);
+        showToast(getErrorMessage(error), true);
       }
     });
   });
@@ -3664,6 +4047,10 @@ function markAccountNav(path) {
     else link.removeAttribute("aria-current");
   });
 }
+/**
+ * Resolves the current session and boots either a social route, auth screen,
+ * or the authenticated desk with polling schedules.
+ */
 async function bootstrapAccount() {
   const me = await api("/api/auth/me");
   currentAccount = me.user;
@@ -3702,7 +4089,7 @@ function bindAccountUi() {
     currentAccount = null;
     location.href = "/";
   });
-  $("editProfileBtn").addEventListener("click", () => loadProfileEditor().catch((error) => showToast(error.message, true)));
+  $("editProfileBtn").addEventListener("click", () => loadProfileEditor().catch((error) => showToast(getErrorMessage(error), true)));
   const closeProfileEditor = () => {
     $("profileEditor").hidden = true;
     $("editProfileBtn").focus();
@@ -3722,7 +4109,7 @@ function bindAccountUi() {
       updateProfileAvatarPreview(dataUrl);
       $("profileMessage").textContent = "Foto siap. Simpan profil untuk mempublikasikannya.";
     } catch (error) {
-      $("profileMessage").textContent = error.message || "Foto tidak dapat diproses.";
+      $("profileMessage").textContent = getErrorMessage(error, "Foto tidak dapat diproses.");
     } finally {
       $("profileAvatarFile").value = "";
     }
@@ -3751,9 +4138,10 @@ function bindAccountUi() {
       $("profileMessage").textContent = "Profil tersimpan.";
       currentAccount.displayName = payload.displayName;
       $("accountLabel").textContent = "@" + currentAccount.username;
-    } catch (error) { $("profileMessage").textContent = error.friendly || error.message; }
+    } catch (error) { $("profileMessage").textContent = getErrorMessage(error); }
   });
 }
+/** Binds static UI events and starts account-aware application bootstrapping. */
 function init() {
   if (location.protocol === "file:") $("fileWarning").hidden = false;
   initPwa();
@@ -3781,7 +4169,7 @@ function init() {
       setMsg("lpMsg", "Refresh selesai. Fee terakru (simulasi): " + fmtMoney(r.accrued) + " — tercatat di ledger Monthly Profit.");
       await loadState();
     } catch (e) {
-      setMsg("lpMsg", e.friendly || e.message, true);
+      setMsg("lpMsg", getErrorMessage(e), true);
     }
   };
   $("lpRefreshBtn").addEventListener("click", doRefreshSimulation);
@@ -3851,12 +4239,12 @@ function init() {
   $("rateEth").value = balanceRates.eth || "";
   $("rateIdr").addEventListener("input", () => {
     balanceRates.idr = Number($("rateIdr").value) || 0;
-    localStorage.setItem("rcslpv4-rate-idr", String(balanceRates.idr));
+    writeStoredNumber(STORAGE_KEYS.idrRate, balanceRates.idr);
     renderBalances();
   });
   $("rateEth").addEventListener("input", () => {
     balanceRates.eth = Number($("rateEth").value) || 0;
-    localStorage.setItem("rcslpv4-rate-eth", String(balanceRates.eth));
+    writeStoredNumber(STORAGE_KEYS.ethRate, balanceRates.eth);
     renderBalances();
   });
   document.addEventListener("keydown", (event) => {
@@ -3865,12 +4253,7 @@ function init() {
     event.preventDefault();
     $("posSearch").focus();
   });
-  // Card Studio (di tab Monthly): tombol dashed memicu input file tersembunyi.
-  $("bgPickImageBtn").addEventListener("click", () => $("bgImageInput").click());
-  $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());
-  $("downloadCardBtnTop").addEventListener("click", () => {
-    downloadCard().catch((e) => setMsg("cardMsg", e.message, true));
-  });
+  bindMonthlyCardUi();
   $("balanceGrid").addEventListener("submit", (event) => {
     const form = event.target.closest("form[data-fund-form]");
     if (!form) return;
@@ -3893,73 +4276,9 @@ function init() {
     try {
       await saveSettings();
     } catch (e) {
-      showToast(e.friendly || e.message, true);
+      showToast(getErrorMessage(e), true);
     }
     renderTpSlStrip();
-  });
-
-  $("monthPrev").addEventListener("click", () => {
-    shiftMonth(-1);
-  });
-  $("monthNext").addEventListener("click", () => {
-    shiftMonth(1);
-  });
-  $("monthToday").addEventListener("click", () => {
-    currentMonth = new Date().toISOString().slice(0, 7);
-    renderMonthly();
-    if ($("tab-monthly").classList.contains("active")) renderCardPreview();
-  });
-
-  $("bgImageInput").addEventListener("change", () => {
-    const f = $("bgImageInput").files[0];
-    if (!f) return;
-    clearBgMedia();
-    const url = URL.createObjectURL(f);
-    const img = new Image();
-    img.onload = () => {
-      cardBg = { type: "image", img, video: null, name: f.name, objectUrl: url };
-      setBgInfo();
-      renderCardPreview();
-    };
-    img.src = url;
-  });
-  $("bgVideoInput").addEventListener("change", () => {
-    const f = $("bgVideoInput").files[0];
-    if (!f) return;
-    clearBgMedia();
-    const url = URL.createObjectURL(f);
-    const video = $("bgVideoPreview");
-    video.src = url;
-    video.onloadeddata = () => {
-      cardBg = { type: "video", img: null, video, name: f.name, objectUrl: url };
-      setBgInfo();
-      renderCardPreview();
-      startVideoPreviewLoop();
-    };
-  });
-  $("bgRemoveBtn").addEventListener("click", () => {
-    clearBgMedia();
-    cardBg = { type: null, img: null, video: null, name: "", objectUrl: "" };
-    $("bgImageInput").value = "";
-    $("bgVideoInput").value = "";
-    setBgInfo();
-    renderCardPreview();
-  });
-  $("bgPlayBtn").addEventListener("click", () => {
-    const v = cardBg.video || $("bgVideoPreview");
-    if (!v) return;
-    if (v.paused) {
-      v.play();
-    } else {
-      v.pause();
-    }
-  });
-  $("bgBrightness").addEventListener("input", () => {
-    $("brightnessVal").textContent = $("bgBrightness").value + "%";
-    renderCardPreview();
-  });
-  $("downloadCardBtn").addEventListener("click", () => {
-    downloadCard().catch((e) => setMsg("cardMsg", e.message, true));
   });
 
   // Discover controls
@@ -4021,7 +4340,7 @@ function init() {
       showToast("Pengaturan Nara tersimpan.");
       fillNaraForm();
     } catch (e) {
-      showToast(e.friendly || e.message, true);
+      showToast(getErrorMessage(e), true);
     }
   });
   $("naraRunBtn").addEventListener("click", runNara);
@@ -4035,7 +4354,7 @@ function init() {
       showToast("Pengaturan Byte tersimpan.");
       fillByteForm();
     } catch (e) {
-      showToast(e.friendly || e.message, true);
+      showToast(getErrorMessage(e), true);
     }
   });
   $("byteCheckBtn").addEventListener("click", async () => {
@@ -4045,7 +4364,7 @@ function init() {
       await loadState();
       renderByteChart();
     } catch (e) {
-      $("byteCheckOut").textContent = e.friendly || e.message;
+      $("byteCheckOut").textContent = getErrorMessage(e);
     }
   });
   $("leaderSaveBtn").addEventListener("click", saveLeader);
@@ -4057,7 +4376,7 @@ function init() {
       showToast("Pengaturan Kopi tersimpan.");
       fillKopiForm();
     } catch (e) {
-      showToast(e.friendly || e.message, true);
+      showToast(getErrorMessage(e), true);
     }
   });
   $("kopiRunBtn").addEventListener("click", runKopi);
@@ -4069,20 +4388,21 @@ function init() {
       selectedToken = null;
       showToast("Demo direset ke keadaan default bersih.");
       await loadState();
-      renderMonthly();
+      await refreshMonthlyView(false);
     } catch (e) {
-      showToast(e.friendly || e.message, true);
+      showToast(getErrorMessage(e), true);
     }
   });
 
   bindAccountUi();
   bootstrapAccount().catch((error) => {
-    if (error.status === 401 || error.message.includes("Authentication required")) return showAuth();
+    const message = getErrorMessage(error);
+    if ((error && error.status === 401) || message.includes("Authentication required")) return showAuth();
     if (location.pathname === "/following" || location.pathname === "/leaderboard" || /^\/u\/[^/]+\/?$/.test(location.pathname)) {
       $("app").hidden = true;
       $("authScreen").hidden = true;
       $("socialScreen").hidden = false;
-      $("socialContent").innerHTML = '<p class="form-error" role="alert">' + esc(error.message || "Profil gagal dimuat.") + '</p>';
+      $("socialContent").innerHTML = '<p class="form-error" role="alert">' + esc(message || "Profil gagal dimuat.") + '</p>';
       return;
     }
     showAuth("Server tidak tersedia. Pastikan backend berjalan, lalu muat ulang halaman.");
@@ -4090,19 +4410,35 @@ function init() {
   });
 }
 function clearBgMedia() {
-  const v = $("bgVideoPreview");
+  if (videoPreviewRaf !== null) {
+    cancelAnimationFrame(videoPreviewRaf);
+    videoPreviewRaf = null;
+  }
+  if (pendingCardMediaUrl) {
+    URL.revokeObjectURL(pendingCardMediaUrl);
+    pendingCardMediaUrl = "";
+  }
+  if (cardBg.objectUrl) URL.revokeObjectURL(cardBg.objectUrl);
+  const video = $("bgVideoPreview");
+  if (!video) {
+    cardBg = createEmptyCardBackground();
+    return;
+  }
   try {
-    v.pause();
+    video.pause();
   } catch (_) {
     /* abaikan */
   }
-  v.removeAttribute("src");
-  v.load();
+  video.onloadeddata = null;
+  video.onerror = null;
+  video.removeAttribute("src");
+  video.load();
+  cardBg = createEmptyCardBackground();
 }
 function shiftMonth(delta) {
   const [y, m] = currentMonth.split("-").map(Number);
   const d = new Date(y, m - 1 + delta, 1);
   currentMonth = d.toISOString().slice(0, 7);
-  renderMonthly();
+  refreshMonthlyView(false);
 }
 document.addEventListener("DOMContentLoaded", init);
