@@ -71,6 +71,7 @@ const DEX_CHAIN_MAP = {
 };
 // GoPlus chain ids (hanya chain yang didukung GoPlus; lainnya -> SECURITY UNAVAILABLE)
 const GOPLUS_CHAIN_ID = { SOL: 101, BASE: 8453, BSC: 56, ETH: 1, ROBINHOOD: 4663 };
+const MAX_GOPLUS_PROFILE_RETRIES = 12;
 const METEORA_DATAPI = "https://dlmm.datapi.meteora.ag";
 let poolAprCache = { at: 0, data: null };
 
@@ -691,6 +692,46 @@ function computeRange(price, binStepBps, strategy, change24hPct) {
 
 /* ---------------- Candidate agent analysis ---------------- */
 
+function normalizeSolanaGoPlusSecurity(value) {
+  if (!value) return null;
+  const hasTransferFee = value.transfer_fee && Object.keys(value.transfer_fee).length > 0;
+  return {
+    is_honeypot: "0",
+    is_mintable: value.mintable?.status === "1" ? "1" : "0",
+    is_blacklisted: value.freezable?.status === "1" ? "1" : "0",
+    can_take_back_ownership: "0",
+    buy_tax: hasTransferFee ? "10" : "0",
+    sell_tax: hasTransferFee ? "10" : "0",
+    cannot_sell_all: value.non_transferable === "1" ? "1" : "0",
+    is_open_source: "1",
+    holder_count: value.holder_count != null && Number.isFinite(Number(value.holder_count)) ? Number(value.holder_count) : null,
+    holders: Array.isArray(value.holders) ? value.holders : [],
+    trusted_token: value.trusted_token,
+  };
+}
+
+function hasCompleteGoPlusProfile(profile) {
+  if (!profile) return false;
+  const holderCount = profile.holder_count ?? profile.holders_count;
+  return holderCount != null && Number.isFinite(Number(holderCount)) && Number(holderCount) >= 0 &&
+    Array.isArray(profile.holders) && profile.holders.length > 0;
+}
+
+async function fetchGoPlusProfile(entry) {
+  if (entry.chain === "SOL") {
+    const response = await fetchJson("https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=" + encodeURIComponent(entry.address), 12000);
+    return normalizeSolanaGoPlusSecurity(Object.values(response.result || {})[0] || null);
+  }
+  const chainId = GOPLUS_CHAIN_ID[entry.chain];
+  if (!chainId) return null;
+  const response = await fetchJson("https://api.gopluslabs.io/api/v1/token_security/" + chainId + "?contract_addresses=" + encodeURIComponent(entry.address), 12000);
+  const profiles = response.result || {};
+  const exactProfile = profiles[entry.address] || profiles[entry.address.toLowerCase()];
+  if (exactProfile) return exactProfile;
+  const matchingEntry = Object.entries(profiles).find(([address]) => address.toLowerCase() === entry.address.toLowerCase());
+  return matchingEntry ? matchingEntry[1] : null;
+}
+
 function goplusSecurityScore(g) {
   if (!g) return null;
   let s = 100;
@@ -912,25 +953,12 @@ async function runCandidateAgent() {
       // GoPlus token_security umum TIDAK mendukung Solana; pakai endpoint
       // khusus Solana /v1/solana/token_security dan ambil PER ALAMAT.
       const results = await Promise.allSettled(list.map(async (entry) => {
-        const res = await fetchJson("https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=" + encodeURIComponent(entry.address), 12000);
-        return { entry, security: Object.values(res.result || {})[0] || null };
+        return { entry, security: await fetchGoPlusProfile(entry) };
       }));
       for (const result of results) {
         if (result.status !== "fulfilled" || !result.value.security) continue;
-        const { entry, security: v } = result.value;
-        const hasFee = v.transfer_fee && Object.keys(v.transfer_fee).length > 0;
-        goplusByAddr[tokenAddressKey("SOL", entry.address)] = {
-          is_honeypot: "0",
-          is_mintable: v.mintable?.status === "1" ? "1" : "0",
-          is_blacklisted: v.freezable?.status === "1" ? "1" : "0",
-          can_take_back_ownership: "0",
-          buy_tax: hasFee ? "10" : "0",
-          sell_tax: hasFee ? "10" : "0",
-          cannot_sell_all: v.non_transferable === "1" ? "1" : "0",
-          is_open_source: "1",
-          holder_count: v.holder_count != null && Number.isFinite(Number(v.holder_count)) ? Number(v.holder_count) : null,
-          holders: Array.isArray(v.holders) ? v.holders : [],
-        };
+        const { entry, security } = result.value;
+        goplusByAddr[tokenAddressKey("SOL", entry.address)] = security;
       }
       return;
     }
@@ -947,21 +975,17 @@ async function runCandidateAgent() {
       /* GoPlus unavailable for this chain -> SECURITY UNAVAILABLE */
     }
   }));
-  // Retry GoPlus per token untuk Robinhood bila batch tidak mengembalikan angka
-  // holder; sebagian respons batch melewatkan item tanpa menjelaskan sebabnya.
-  const robinhoodMissingHolders = enriched.filter((entry) => {
-    if (entry.chain !== "ROBINHOOD") return false;
-    const security = goplusByAddr[tokenAddressKey(entry.chain, entry.address)];
-    return !security || security.holder_count == null || !Number.isFinite(Number(security.holder_count));
-  }).slice(0, 12);
-  const holderRetries = await Promise.allSettled(robinhoodMissingHolders.map(async (entry) => {
-    const url = "https://api.gopluslabs.io/api/v1/token_security/4663?contract_addresses=" + encodeURIComponent(entry.address);
-    const response = await fetchJson(url, 8000);
-    const result = response.result || {};
-    const security = result[entry.address] || result[entry.address.toLowerCase()] || Object.values(result)[0];
-    return { entry, security };
-  }));
-  for (const result of holderRetries) {
+  // Batch GoPlus kadang melewatkan profil atau holder. Retry per token pada
+  // seluruh chain yang didukung, tetapi tetap fail-closed bila retry juga gagal.
+  const incompleteProfiles = enriched.filter((entry) => {
+    if (!GOPLUS_CHAIN_ID[entry.chain]) return false;
+    return !hasCompleteGoPlusProfile(goplusByAddr[tokenAddressKey(entry.chain, entry.address)]);
+  }).slice(0, MAX_GOPLUS_PROFILE_RETRIES);
+  const profileRetries = await Promise.allSettled(incompleteProfiles.map(async (entry) => ({
+    entry,
+    security: await fetchGoPlusProfile(entry),
+  })));
+  for (const result of profileRetries) {
     if (result.status !== "fulfilled" || !result.value.security) continue;
     const { entry, security } = result.value;
     const key = tokenAddressKey(entry.chain, entry.address);
@@ -2076,60 +2100,66 @@ async function handleRequest(req, res) {
       let allocated = state.positions.filter((p) => p.status === "open").reduce((s, p) => s + (Number(p.amount) || 0), 0);
       for (const c of candidates) {
         const sym = c.symbol || "???";
+        const skip = (reason) => skipped.push({
+          symbol: sym,
+          chain: c.chain || null,
+          address: c.address || null,
+          reason,
+        });
         const score = c.recommendation_score;
         const aVerdict = c.agent_analysis ? c.agent_analysis.verdict : null;
         if (at.source === "UNISWAP_V4" && (c.pool_apr == null || c.pool_apr < Number(at.minApr || 0))) {
-          skipped.push({ symbol: sym, reason: "APR pool tidak memenuhi batas minimum." });
+          skip("APR pool tidak memenuhi batas minimum.");
           continue;
         }
         if (!CHAINS.includes(c.chain)) {
-          skipped.push({ symbol: sym, reason: "Chain " + c.chain + " di luar 7 chain simulasi." });
+          skip("Chain " + c.chain + " di luar 7 chain simulasi.");
           continue;
         }
         const safetyReason = autoTradingRiskReason(c, { minLiquidityUsd: at.minLiquidity, minHolderCount: at.minHolder });
         if (safetyReason) {
-          skipped.push({ symbol: sym, reason: safetyReason });
+          skip(safetyReason);
           continue;
         }
         if (score == null || Number(score) < Number(at.minScore)) {
-          skipped.push({ symbol: sym, reason: "Skor " + (score == null ? "-" : score) + " di bawah minScore " + at.minScore + "." });
+          skip("Skor " + (score == null ? "-" : score) + " di bawah minScore " + at.minScore + ".");
           continue;
         }
         if (at.verdictFilter !== "ANY" && aVerdict !== at.verdictFilter) {
-          skipped.push({ symbol: sym, reason: "Verdict agent " + aVerdict + " tidak sesuai filter " + at.verdictFilter + "." });
+          skip("Verdict agent " + aVerdict + " tidak sesuai filter " + at.verdictFilter + ".");
           continue;
         }
         if (at.chainFilter !== "ALL" && c.chain !== at.chainFilter) {
-          skipped.push({ symbol: sym, reason: "Chain " + c.chain + " tidak sesuai filter " + at.chainFilter + "." });
+          skip("Chain " + c.chain + " tidak sesuai filter " + at.chainFilter + ".");
           continue;
         }
         if (c.address && openAddrs.has(tokenAddressKey(c.chain, c.address))) {
-          skipped.push({ symbol: sym, reason: "Sudah ada posisi open untuk token ini." });
+          skip("Sudah ada posisi open untuk token ini.");
           continue;
         }
         if (Number(c.liquidity_usd || 0) < Number(at.minLiquidity)) {
-          skipped.push({ symbol: sym, reason: "Likuiditas " + c.liquidity_usd + " di bawah minLiquidity " + at.minLiquidity + "." });
+          skip("Likuiditas " + c.liquidity_usd + " di bawah minLiquidity " + at.minLiquidity + ".");
           continue;
         }
         if (c.holders_count == null) {
-          skipped.push({ symbol: sym, reason: "Data holder tidak tersedia (dianggap TIDAK lolos, bukan lolos)." });
+          skip("Data holder tidak tersedia (dianggap TIDAK lolos, bukan lolos).");
           continue;
         }
         if (Number(c.holders_count || 0) < Number(at.minHolder)) {
-          skipped.push({ symbol: sym, reason: "Holder " + c.holders_count + " di bawah minHolder " + at.minHolder + "." });
+          skip("Holder " + c.holders_count + " di bawah minHolder " + at.minHolder + ".");
           continue;
         }
         if (slots <= 0) {
-          skipped.push({ symbol: sym, reason: "Slot posisi penuh (maks " + at.maxPositions + " posisi)." });
+          skip("Slot posisi penuh (maks " + at.maxPositions + " posisi).");
           continue;
         }
         if (allocated + Number(at.amountPerPosition) > TOTAL_PORTFOLIO_USDC) {
-          skipped.push({ symbol: sym, reason: "Alokasi melebihi modal 5000 USDC." });
+          skip("Alokasi melebihi modal 5000 USDC.");
           continue;
         }
         const price = Number(c.price_usd) || 0;
         if (!(price > 0)) {
-          skipped.push({ symbol: sym, reason: "Harga kandidat tidak valid." });
+          skip("Harga kandidat tidak valid.");
           continue;
         }
         const slPnlPct = Number(tp.defaultSlPct) > 0 ? Number(tp.defaultSlPct) : null;
@@ -2156,7 +2186,7 @@ async function handleRequest(req, res) {
           source: "Auto Trading LP",
         });
         if (r.error) {
-          skipped.push({ symbol: sym, reason: r.error });
+          skip(r.error);
           continue;
         }
         opened.push({ symbol: c.symbol, chain: c.chain, amount: Number(at.amountPerPosition), price, apr: c.pool_apr == null ? null : c.pool_apr, protocol: c.pool_protocol || null });

@@ -3754,6 +3754,14 @@ async function scanNaraV4Pools() {
   }
 }
 
+function naraCandidateLabel(candidate) {
+  const label = [candidate.symbol || "???", candidate.chain].filter(Boolean).join(" · ");
+  const address = String(candidate.address || "");
+  if (!address) return label;
+  const compactAddress = address.length > 16 ? address.slice(0, 8) + "…" + address.slice(-6) : address;
+  return label + " · " + compactAddress;
+}
+
 async function runNara() {
   readNaraForm();
   try {
@@ -3768,7 +3776,7 @@ async function runNara() {
     const lines = [];
     if (r.stoppedByDailyLoss) lines.push("Berhenti: batas kerugian harian tercapai (PnL hari ini " + fmtMoney(r.todayPnl) + ").");
     (r.opened || []).forEach((o) => lines.push("Posisi simulasi dibuka: " + esc(o.symbol) + " (" + esc(o.chain) + ") " + fmtMoney(o.amount) + " @ " + fmtPrice(o.price) + (o.apr == null ? "" : " · " + esc(o.protocol || "Pool") + " APR " + Number(o.apr).toFixed(2) + "%")));
-    (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(s.symbol) + " — " + esc(s.reason)));
+    (r.skipped || []).forEach((s) => lines.push("Dilewati: " + esc(naraCandidateLabel(s)) + " — " + esc(s.reason)));
     $("naraRunOut").innerHTML = lines.length
       ? "<ul>" + lines.map((l) => "<li>" + l + "</li>").join("") + "</ul>"
       : '<p class="muted">Tidak ada posisi simulasi dibuka. Periksa log Nara dan filter guardrail.</p>';

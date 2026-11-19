@@ -6,6 +6,7 @@ const MIN_VOLUME_24H_USD = 25_000;
 const MIN_HOLDER_COUNT = 500;
 const MIN_SECURITY_SCORE = 95;
 const MAX_TOP_HOLDERS_PERCENT = 40;
+const AUTO_TRADING_QUOTE_SYMBOLS = new Set(["USDC"]);
 
 function timestamp(value) {
   if (value == null || value === "") return NaN;
@@ -19,6 +20,11 @@ function finiteNumber(value) {
 }
 
 function autoTradingRiskReason(candidate, options = {}) {
+  const symbol = String(candidate && candidate.symbol || "").trim().toUpperCase();
+  if (AUTO_TRADING_QUOTE_SYMBOLS.has(symbol)) {
+    return symbol + " adalah aset quote pendanaan simulasi, bukan token target LP.";
+  }
+
   const analysis = candidate && candidate.agent_analysis;
   if (!analysis || analysis.status !== "complete" || analysis.confidence !== "high") {
     return "Data keamanan/holder GoPlus belum lengkap; Auto Trading menolak kandidat berisiko tidak diketahui.";

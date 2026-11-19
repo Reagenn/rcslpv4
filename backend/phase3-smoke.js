@@ -91,6 +91,7 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     price_change_24h: 8, price_change_h1: 2, price_change_h6: 5, price_change_m5: 1,
   };
   assert.equal(autoTradingRiskReason(safeCandidate, { now: riskNow }), null, "candidate passing all hard-gates is eligible for configured filters");
+  assert.match(autoTradingRiskReason({ ...safeCandidate, symbol: "usdc" }, { now: riskNow }), /aset quote pendanaan simulasi/, "USDC is excluded as the simulated funding quote instead of being misreported as incomplete GoPlus data");
   assert.match(autoTradingRiskReason({ ...safeCandidate, price_change_24h: -90 }, { now: riskNow }), /Perubahan harga 24 jam/, "rug-like daily price collapse is blocked");
   assert.match(autoTradingRiskReason({ ...safeCandidate, agent_analysis: { ...safeCandidate.agent_analysis, status: "partial" } }, { now: riskNow }), /Data keamanan\/holder/, "incomplete security data is rejected");
   assert.match(autoTradingRiskReason({ ...safeCandidate, pair_created_at: riskNow - 2 * 60 * 60 * 1000 }, { now: riskNow }), /Umur pool/, "new pools are rejected");
