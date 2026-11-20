@@ -25,6 +25,9 @@ const { migrateLegacyPositionRisk, positionExitReason } = require("./position-ri
 const { autoTradingRiskReason } = require("./auto-trading-risk");
 const { pairPriceUsdForToken } = require("./dex-pricing");
 const { verifyGoogleIdToken } = require("./google-auth");
+const { valuePosition } = require("./position-valuation");
+const { BACKTEST_DAYS, HOUR_MS, MAX_HISTORY_CANDIDATES, backtestSettings, selectNaraCandidates, filterBacktestCandidates, runNaraBacktest } = require("./nara-backtest");
+const { loadNaraPriceHistories } = require("./historical-prices");
 
 function loadLocalEnv() {
   const envFile = path.join(__dirname, "..", "..", ".env");
@@ -1442,78 +1445,6 @@ function makeBins(entryPrice, binStepBps, count) {
   }
   return bins;
 }
-function distributionWeights(distribution) {
-  const m = String(distribution || "50/50").split("/");
-  const wt = Number(m[0]) || 0;
-  const wq = Number(m[1]) || 0;
-  const sum = wt + wq;
-  if (sum <= 0) return { token: 0.5, quote: 0.5 };
-  return { token: wt / sum, quote: wq / sum };
-}
-// Valuasi concentrated liquidity (gaya Uniswap v3 / DLMM, pendekatan kontinu
-// di atas range harga tersimpan posisi [pa, pb] = [minPrice, maxPrice]).
-// SATU fungsi ini dipakai semua jalur (positionPublic, /api/realtime,
-// totalPnlLive, closePositionInternal) agar angka tidak pernah berbeda
-// antar-layar.
-//
-// Model: posisi direpresentasikan oleh likuiditas konstan L. Komposisi awal
-// pada harga buka p0 diturunkan dari L:
-//   p0 di dalam range : x0 = L(1/√p0 − 1/√pb),  y0 = L(√p0 − √pa)
-//   p0 ≤ pa           : x0 = L(1/√pa − 1/√pb),   y0 = 0   (semua token)
-//   p0 ≥ pb           : x0 = 0,                 y0 = L(√pb − √pa) (semua quote)
-// dengan L dipilih sehingga x0·p0 + y0 = amount. Range yang offset dari entry
-// (single-sided) tertangani alami oleh cabang p0 di tepi/luar range.
-// Nilai pada harga live p:
-//   p ≤ pa : semua token — value = x·p, x = L(1/√pa − 1/√pb)
-//   p ≥ pb : semua quote — value = L(√pb − √pa) (BEKU, tidak ikut naik lagi)
-//   di dalam range: x = L(1/√p − 1/√pb), y = L(√p − √pa), value = x·p + y
-// Benchmark HOLD = memegang jumlah awal yang sama: holdValue = x0·p + y0.
-// Karena pool menjual aset yang naik (dan membeli yang turun) secara
-// bertahap, value ≤ holdValue untuk semua p → il = value − holdValue ≤ 0,
-// seperti LP asli. (Model lama amount × r memberi eksposur token 100% dan
-// membuat "IL" positif saat harga naik — itu yang diperbaiki di sini.)
-// Untuk DLMM ini adalah pendekatan kontinu di atas range bin tersimpan
-// [minPrice, maxPrice], bukan penjumlahan per-bin diskret.
-// Fallback legacy (posisi tanpa range valid): full-range berbobot
-// value = amount × r^(w.token) vs holdValue rumus bobot — il ≤ 0 oleh AM–GM.
-function valuePosition(pos, price) {
-  const amount = Number(pos.amount) || 0;
-  const p0 = Number(pos.entryPrice) || 0;
-  const p = Number(price);
-  const pa = Number(pos.minPrice) || 0;
-  const pb = Number(pos.maxPrice) || 0;
-  if (!(amount > 0) || !(p0 > 0) || !(p > 0)) {
-    return { value: round2(amount), holdValue: round2(amount), il: 0, model: "none" };
-  }
-  if (pa > 0 && pb > pa) {
-    const sa = Math.sqrt(pa);
-    const sb = Math.sqrt(pb);
-    // Jumlah aset per unit L pada harga q (piecewise v3).
-    const amountsAt = (q) => {
-      if (q <= pa) return { x: 1 / sa - 1 / sb, y: 0 };
-      if (q >= pb) return { x: 0, y: sb - sa };
-      const sq = Math.sqrt(q);
-      return { x: 1 / sq - 1 / sb, y: sq - sa };
-    };
-    const at0 = amountsAt(p0);
-    const v0perL = at0.x * p0 + at0.y;
-    if (v0perL > 0) {
-      const L = amount / v0perL;
-      const x0 = at0.x * L;
-      const y0 = at0.y * L;
-      const at = amountsAt(p);
-      const value = at.x * L * p + at.y * L;
-      const holdValue = x0 * p + y0;
-      return { value: round2(value), holdValue: round2(holdValue), il: round2(holdValue - value), model: "cl" };
-    }
-  }
-  const r = p / p0;
-  const w = distributionWeights(pos.distribution);
-  const value = amount * Math.pow(r, w.token);
-  const holdValue = amount * (w.token * r + w.quote);
-  return { value: round2(value), holdValue: round2(holdValue), il: round2(value - holdValue), model: "legacy" };
-}
-
 function positionPublic(p) {
   const current = roundPrice(p.currentPrice ?? p.entryPrice);
   // Valuasi + benchmark dari fungsi bersama valuePosition() (model
@@ -2036,6 +1967,36 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, { logs: (state.agentLogs || []).slice(0, 50) });
     }
 
+    if (pathname === "/api/agent/auto-trading/backtest" && req.method === "POST") {
+      const b = await readBody(req);
+      if (b.days !== undefined && b.days !== BACKTEST_DAYS) return sendJson(res, 400, { error: "Backtest Nara memakai periode tetap 30 hari." });
+      const snapshotSettings = backtestSettings(state.settings, b.settings, CHAINS);
+      const to = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
+      const from = to - BACKTEST_DAYS * 24 * HOUR_MS;
+      let agentOut;
+      let pools = [];
+      try {
+        agentOut = await runCandidateAgent();
+        if (snapshotSettings.autoTrading.source === "UNISWAP_V4") pools = (await runPoolAprScan()).pools;
+      } catch (error) {
+        return sendJson(res, error.statusCode || 502, { error: error.message || "Snapshot kandidat Nara gagal dimuat." });
+      }
+      const candidates = JSON.parse(JSON.stringify(selectNaraCandidates(agentOut, snapshotSettings.autoTrading, pools)));
+      const snapshotAt = Date.parse(agentOut.fetched_at) || Date.now();
+      const { eligible } = filterBacktestCandidates(candidates, snapshotSettings.autoTrading, snapshotAt, CHAINS);
+      const startingBalances = defaultState().balances;
+      // Only local snapshots are used after releasing the per-account request queue.
+      // Slow OHLCV requests must not block other users or change the active desk.
+      loadNaraPriceHistories(eligible.slice(0, MAX_HISTORY_CANDIDATES), { from, to }).then((histories) => {
+        if (res.destroyed || res.writableEnded) return;
+        const result = runNaraBacktest({ settings: snapshotSettings, candidates, histories, from, to, snapshotAt, startingBalances });
+        sendJson(res, 200, result);
+      }).catch((error) => {
+        if (!res.destroyed && !res.writableEnded) sendJson(res, error.statusCode || 500, { error: error.statusCode ? error.message : "Backtest gagal diproses. Coba lagi nanti." });
+      });
+      return;
+    }
+
     if (pathname === "/api/agent/auto-trading" && req.method === "POST") {
       const b = await readBody(req);
       if (b && b.action && b.action !== "run") return sendJson(res, 400, { error: "Action tidak valid." });
@@ -2068,27 +2029,7 @@ async function handleRequest(req, res) {
           failedNetworks: e.failedNetworks || [],
         });
       }
-      let candidates = (agentOut.recommendations || []).concat(agentOut.pending_candidates || []);
-      if (at.source === "UNISWAP_V4") {
-        const bestByToken = new Map();
-        for (const pool of v4Pools) {
-          if (pool.apr < Number(at.minApr || 0) || pool.tvlUsd < Number(at.minLiquidity || 0)) continue;
-          for (const token of [pool.token0, pool.token1]) {
-            const address = String(token && token.id || "");
-            if (!isPoolTokenAddress(pool.chain, address)) continue;
-            const key = tokenAddressKey(pool.chain, address);
-            const previous = bestByToken.get(key);
-            if (!previous || pool.apr > previous.apr) bestByToken.set(key, pool);
-          }
-        }
-        candidates = candidates.filter((candidate) => bestByToken.has(tokenAddressKey(candidate.chain, candidate.address)))
-          .map((candidate) => {
-            const pool = bestByToken.get(tokenAddressKey(candidate.chain, candidate.address));
-            return { ...candidate, pool_apr: pool.apr, pool_protocol: pool.protocol, pool_id: pool.poolId, pool_tvl_usd: pool.tvlUsd };
-          }).sort((a, b) => b.pool_apr - a.pool_apr);
-      } else {
-        candidates = agentOut.recommendations || [];
-      }
+      const candidates = selectNaraCandidates(agentOut, at, v4Pools);
       const opened = [];
       const skipped = [];
       const openAddrs = new Set(state.positions.filter((p) => p.status === "open").map((p) => tokenAddressKey(p.chain, p.address)));
