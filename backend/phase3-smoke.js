@@ -17,6 +17,54 @@ const { autoTradingRiskReason } = require("./src/auto-trading-risk");
 const { pairPriceUsdForToken } = require("./src/dex-pricing");
 const { verifyGoogleIdToken } = require("./src/google-auth");
 
+function installBacktestFetchFixture() {
+  const address = (id) => "0x" + id.toString(16).padStart(40, "0");
+  const tokens = [11, 12, 13, 14].map(address);
+  const pools = [111, 112, 113, 114].map(address);
+  const quote = address(999);
+  const json = (data) => ({ ok: true, status: 200, json: async () => data });
+  global.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.hostname === "api.dexscreener.com") {
+      if (url.pathname === "/token-boosts/latest/v1") return json(tokens.map((tokenAddress) => ({ chainId: "base", tokenAddress })));
+      if (url.pathname.startsWith("/latest/dex/tokens/")) return json({ pairs: tokens.map((token, index) => ({
+        chainId: "base", pairAddress: pools[index], dexId: "fixture", baseToken: { address: token, symbol: "TEST" + index, name: "Fixture " + index },
+        quoteToken: { address: quote, symbol: "USDC" }, priceUsd: "100", priceNative: "100",
+        liquidity: { usd: 120000 }, volume: { h24: 50000, h6: 10000, h1: 2000, m5: 200 },
+        priceChange: { h24: 1, h6: 1, h1: 1, m5: 1 }, txns: { h24: { buys: 500, sells: 500 } },
+        pairCreatedAt: Date.now() - 60 * 86400000,
+      })) });
+      return json([]);
+    }
+    if (url.hostname === "api.gopluslabs.io") {
+      const result = {};
+      for (const token of (url.searchParams.get("contract_addresses") || "").split(",")) result[token] = {
+        is_honeypot: "0", is_mintable: "0", is_blacklisted: "0", is_open_source: "1", holder_count: "800",
+        holders: Array.from({ length: 10 }, () => ({ percent: "0.01" })),
+      };
+      return json({ result });
+    }
+    if (url.hostname === "dlmm.datapi.meteora.ag") return json({ data: [] });
+    if (url.hostname === "api.geckoterminal.com") {
+      const match = url.pathname.match(/\/pools\/([^/]+)\/ohlcv\/hour$/);
+      if (!match) return json({ data: [], included: [] });
+      const index = pools.indexOf(match[1]);
+      const token = url.searchParams.get("token");
+      if (index < 0 || token !== tokens[index]) throw new Error("Unexpected OHLCV fixture token/pool.");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const end = Math.floor((Number(url.searchParams.get("before_timestamp")) + 1) / 3600) * 3600;
+      const change = [10, -10, 0, 5][index];
+      const ohlcv = Array.from({ length: 720 }, (_, hour) => {
+        const open = 100 + change * hour / 720;
+        const close = 100 + change * (hour + 1) / 720;
+        return [end - (720 - hour) * 3600, open, Math.max(open, close), Math.min(open, close), close, 1000];
+      });
+      return json({ data: { attributes: { ohlcv_list: ohlcv.reverse() } }, meta: { base: { address: token }, quote: { address: quote } } });
+    }
+    throw new Error("Unexpected upstream fixture request: " + url.hostname);
+  };
+}
+
 (async () => {
   const root = process.cwd();
   const validGoogleClaims = {
@@ -67,6 +115,9 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
   assert(!serverScript.includes("UNISWAP_V4_SUBGRAPH_URL"), "APR scanner does not use a Subgraph URL");
   assert(UNISWAP_V4_NETWORKS.some((network) => network.chain === "ROBINHOOD"), "Robinhood Chain v4 pools are included");
   assert(frontendScript.includes("naraAprTradeBtn"), "APR preview provides an explicit simulation action");
+  assert(frontendHtml.includes('id="naraBacktestBtn"') && frontendHtml.includes('id="naraBacktestOut"'), "Nara has a separate historical scenario control and output");
+  assert(frontendScript.includes("renderNaraBacktest") && frontendScript.includes("/api/agent/auto-trading/backtest"), "Nara frontend calls and renders the backtest API");
+  assert(frontendMinifiedScript.includes("/api/agent/auto-trading/backtest"), "served frontend bundle includes the backtest action");
   assert(serverScript.includes("token-boosts/top/v1"), "candidate feed includes top boosted tokens");
   assert(serverScript.includes("token-profiles/recent-updates/v1"), "candidate feed includes recently updated token profiles");
   assert(serverScript.includes("slice(0, 40)"), "candidate feed prioritizes up to 40 Robinhood tokens");
@@ -154,7 +205,7 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
   assert(frontendScript.includes("mainnetRiskAcknowledged"), "mainnet risk acknowledgement gates swaps");
   assert(!frontendScript.includes("BASE_SEPOLIA_CHAIN_ID"), "no testnet chain guard remains");
   assert(!frontendScript.includes("0x036CbD53842c5426634e7929541eC2318f3dCF7e"), "testnet USDC is removed");
-  const temp = path.join(os.tmpdir(), "rcs-phase3-" + crypto.randomBytes(6).toString("hex"));
+  const temp = path.join(os.tmpdir(), "kilo", "rcs-phase3-" + crypto.randomBytes(6).toString("hex"));
   const port = 41000 + crypto.randomInt(10000);
   const base = "http://127.0.0.1:" + port;
   let child;
@@ -179,9 +230,11 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     };
     fs.mkdirSync(path.join(temp, "backend", "data"), { recursive: true });
     fs.writeFileSync(path.join(temp, "backend", "data", "users.json"), JSON.stringify(usersStore));
+    const fetchFixture = path.join(temp, "backtest-fetch.cjs");
+    fs.writeFileSync(fetchFixture, "(" + installBacktestFetchFixture.toString() + ")();");
     const cookieA = "lpdesk_session=" + sessionTokenA;
     const cookieB = "lpdesk_session=" + sessionTokenB;
-    child = spawn(process.execPath, [path.join(temp, "backend", "src", "server.js")], {
+    child = spawn(process.execPath, ["--require", fetchFixture, path.join(temp, "backend", "src", "server.js")], {
       cwd: temp,
       env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), GOOGLE_CLIENT_ID: "" },
       stdio: "ignore",
@@ -233,6 +286,8 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     assert.equal(result.response.status, 401, "desk API requires authentication");
     result = await request("/api/balance/fund", "POST", null, { chain: "SOL", amount: 10 });
     assert.equal(result.response.status, 401, "simulated top-up requires authentication");
+    result = await request("/api/agent/auto-trading/backtest", "POST", null, { days: 30 });
+    assert.equal(result.response.status, 401, "Nara historical scenario requires authentication");
     result = await request("/api/auth/me");
     assert.equal(result.data.user, null, "anonymous session response");
 
@@ -312,6 +367,41 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     assert.equal(result.data.monthlyPositionPnl.pnl, 0, "new open position starts with zero monthly PnL");
     assert.equal(result.data.monthlyPositionPnl.positions, 1, "monthly PnL identifies current-month open positions");
 
+    const deskPath = path.join(temp, "backend", "data", "desks", "user-alice.json");
+    const deskBeforeBacktest = fs.readFileSync(deskPath, "utf8");
+    result = await request("/api/agent/auto-trading/backtest", "POST", cookieA, { days: 31 });
+    assert.equal(result.response.status, 400, "backtest rejects non-30-day periods");
+    result = await request("/api/agent/auto-trading/backtest", "POST", cookieA, { settings: { autoTrading: { maxPositions: 1.5 } } });
+    assert.equal(result.response.status, 400, "backtest rejects fractional max positions");
+    result = await request("/api/agent/auto-trading/backtest", "POST", cookieA, { settings: { autoTrading: { source: "DEX", minScore: 100 } } });
+    assert.equal(result.response.status, 200, "no eligible candidates is a valid empty scenario");
+    assert.equal(result.data.status, "no_trades", "empty scenario is explicitly labeled");
+    assert.equal(result.data.metrics.winRatePct, null, "empty scenario does not fabricate a win rate");
+    assert.equal(result.data.metrics.totalPnl, null, "empty scenario does not fabricate zero PnL");
+    assert.equal(result.data.metrics.maxDrawdownPct, null, "empty scenario does not fabricate zero drawdown");
+    let backtestSettled = false;
+    const backtestPromise = request("/api/agent/auto-trading/backtest", "POST", cookieA, { days: 30, settings: {
+      autoTrading: { enabled: false, source: "DEX", minScore: 70, amountPerPosition: 250, maxPositions: 3 },
+    } }).finally(() => { backtestSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const otherAccount = await request("/api/state", "GET", cookieB);
+    assert.equal(otherAccount.response.status, 200, "another account can read state while OHLCV is loading");
+    assert.equal(backtestSettled, false, "OHLCV requests do not hold the shared account request queue");
+    result = await backtestPromise;
+    assert.equal(result.response.status, 200, "disabled Nara can run an isolated historical price scenario");
+    assert.equal(result.data.simulation, true, "historical scenario is labeled simulation");
+    assert.equal(result.data.mode, "current_candidates_historical_prices", "scenario discloses current candidate selection");
+    assert.equal(result.data.coverage.usablePriceSeries, 4, "fixture provides four complete hourly histories");
+    assert.equal(result.data.metrics.totalTrades, 3, "max three positions are opened even though four are eligible");
+    assert.equal(result.data.metrics.maxConcurrentPositions, 3, "scenario enforces concurrent position limit");
+    assert.equal(result.data.metrics.winRatePct, 33.33, "win rate counts one winning LP out of three settled positions");
+    assert(result.data.metrics.totalPnl < 0 && result.data.metrics.maxDrawdownPct > 0, "scenario reports losses and mark-to-market drawdown");
+    assert(result.data.trades.every((trade) => trade.amount === 250), "scenario uses $250 per position");
+    assert.equal(result.data.equityCurve.length, 721, "equity curve contains baseline plus 720 hourly marks");
+    assert.equal(fs.readFileSync(deskPath, "utf8"), deskBeforeBacktest, "backtest leaves persisted settings, balances, positions, ledger, and logs byte-identical");
+    assert.equal(otherAccount.data.positions.length, 0, "detached backtest does not leak positions to another account");
+    assert.equal(otherAccount.data.settings.autoTrading.source, "DEX", "detached scenario does not overwrite another account settings");
+
     result = await request("/api/leaderboard", "GET");
     const rankedAlice = result.data.leaderboard.find((item) => item.username === "alice");
     assert(rankedAlice, "opted-in profile appears on leaderboard");
@@ -354,7 +444,7 @@ const { verifyGoogleIdToken } = require("./src/google-auth");
     result = await request("/api/auth/login", "POST", cookieB, { username: "alice", password: "wrong-password" });
     assert.equal(result.response.status, 404, "legacy password login stays disabled after logout");
 
-    console.log("Smoke tests passed: Google ID token verification, Google-only auth, legacy account linking, USD-based TP/SL, APR normalization, and account isolation.");
+    console.log("Smoke tests passed: Google-only auth, USD-based TP/SL, APR normalization, isolated Nara 30-day historical scenarios, and account isolation.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();
