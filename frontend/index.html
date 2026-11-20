@@ -939,6 +939,13 @@
         </div>
         <div id="naraV4Pools" class="run-out"></div>
         <div id="naraRunOut" class="run-out"></div>
+        <section class="nara-backtest" aria-labelledby="naraBacktestTitle">
+          <h4 id="naraBacktestTitle">Backtest harga 30 hari</h4>
+          <p class="muted">Uji nilai form Nara pada OHLCV 30 hari terakhir. Default: min score 70, $250/posisi, maks 3. Tidak perlu mengaktifkan Nara; tidak menyimpan pengaturan atau mengubah saldo/posisi akun.</p>
+          <p class="muted">Kandidat dan skor memakai snapshot saat ini, bukan sinyal historis. Hanya riwayat 30 hari lengkap yang dipakai. Fee LP, reward, gas, dan slippage tidak dihitung.</p>
+          <button id="naraBacktestBtn" type="button">Jalankan backtest 30 hari</button>
+          <div id="naraBacktestOut" class="run-out" aria-live="polite" aria-busy="false"></div>
+        </section>
         <h4>Log Nara</h4>
         <div id="naraLogs" class="agent-logs"></div>
       </div>

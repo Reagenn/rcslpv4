@@ -1253,6 +1253,40 @@ h4 {
 .run-out li {
   margin: 3px 0;
 }
+.nara-backtest {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 8px;
+}
+.backtest-warning {
+  background: #3a2c12;
+  border: 1px solid #6b5316;
+  border-radius: 10px;
+  color: #ffd97a;
+  padding: 10px 12px;
+}
+.backtest-metrics small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.nara-backtest details {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.nara-backtest summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.backtest-table {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.backtest-table table {
+  min-width: 560px;
+}
 
 /* Open LP */
 .seg-row {

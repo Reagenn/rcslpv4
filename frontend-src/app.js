@@ -2688,8 +2688,7 @@ function fillNaraForm() {
   $("naraMinApr").value = at.minApr == null ? 20 : at.minApr;
   renderAgentLogs("naraLogs", "Nara");
 }
-function readNaraForm() {
-  const at = settings.autoTrading;
+function readNaraForm(at = settings.autoTrading) {
   at.enabled = $("naraEnabled").checked;
   at.minScore = Number($("naraMinScore").value) || 0;
   at.amountPerPosition = Number($("naraAmount").value) || 0;
@@ -2702,6 +2701,7 @@ function readNaraForm() {
   at.minHolder = Number($("naraMinHolder").value) || 0;
   at.source = $("naraSource").value;
   at.minApr = Number($("naraMinApr").value) || 0;
+  return at;
 }
 function fillByteForm() {
   const tp = settings.tpSl;
@@ -3787,6 +3787,58 @@ async function runNara() {
   }
 }
 
+function renderNaraBacktest(result) {
+  const box = $("naraBacktestOut");
+  const metrics = result.metrics;
+  const at = result.settings.autoTrading;
+  const date = (value) => new Date(value).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+  const percent = (value) => value == null ? "Tidak tersedia" : Number(value).toFixed(2) + "%";
+  const money = (value) => value == null ? "Tidak tersedia" : fmtMoney(value);
+  const trades = (result.trades || []).slice(-100);
+  const skipped = result.skipped || [];
+  box.innerHTML =
+    '<p class="backtest-warning"><strong>Skenario harga, bukan replay sinyal historis.</strong> ' + esc(result.methodology.warning) + '</p>' +
+    '<p><strong>Min score ' + Number(at.minScore) + ' / ' + fmtMoney(at.amountPerPosition) + ' per posisi / maks ' + Number(at.maxPositions) + '</strong><br>' +
+    esc(date(result.period.from)) + ' sampai ' + esc(date(result.period.to)) + ' UTC (candle 1 jam).</p>' +
+    '<div class="copy-stats backtest-metrics">' +
+    '<div><span>Win rate</span><strong>' + percent(metrics.winRatePct) + '</strong><small>' + Number(metrics.wins) + ' untung / ' + Number(metrics.totalTrades) + ' posisi tutup</small></div>' +
+    '<div><span>Total PnL</span><strong class="' + (metrics.totalPnl == null ? '' : metrics.totalPnl >= 0 ? 'pos' : 'neg') + '">' + money(metrics.totalPnl) + '</strong><small>' + percent(metrics.returnPct) + ' dari modal awal</small></div>' +
+    '<div><span>Max drawdown</span><strong>' + percent(metrics.maxDrawdownPct) + '</strong><small>' + money(metrics.maxDrawdownUsd) + ' dari puncak equity</small></div></div>' +
+    (result.status === 'no_trades' ? '<p class="muted">Tidak ada transaksi yang dapat disimulasikan. Metrik tidak tersedia, bukan hasil nol. Periksa filter dan alasan kandidat dilewati di bawah.</p>' : '') +
+    '<p class="muted">Modal awal ' + money(metrics.initialCapital) + ' / equity akhir ' + money(metrics.finalEquity) +
+    '. Maks posisi bersamaan: ' + Number(metrics.maxConcurrentPositions) + '. ' + Number(metrics.losses) + ' rugi, ' + Number(metrics.breakEven) + ' impas. Daily-loss stop: ' + Number(metrics.dailyLossStoppedDays) + ' hari UTC.</p>' +
+    '<p class="muted">Snapshot kandidat: ' + esc(date(result.snapshotAt)) + ' UTC. Riwayat lengkap: ' + Number(result.coverage.usablePriceSeries) +
+    ' dari ' + Number(result.coverage.eligibleCandidates) + ' kandidat lolos filter (' + Number(result.coverage.expectedCandlesPerSeries) + ' candle/seri). Maks 10 seri per run. Candle volume nol: ' + Number(result.coverage.zeroVolumeCandles) + ' (price mark, bukan bukti fill).</p>' +
+    '<details><summary>Metode dan batasan</summary><ul>' + Object.entries(result.methodology).filter(([key]) => key !== 'warning').map(([, text]) => '<li>' + esc(text) + '</li>').join('') + '</ul></details>' +
+    (trades.length ? '<details><summary>Rincian posisi (' + Number(metrics.totalTrades) + (Number(metrics.totalTrades) > 100 ? ', 100 terakhir' : '') + ')</summary>' +
+      '<div class="backtest-table" tabindex="0" aria-label="Riwayat posisi backtest"><table class="mini-table"><thead><tr><th>Token</th><th>Buka (UTC)</th><th>Tutup (UTC)</th><th>Exit</th><th>PnL</th></tr></thead><tbody>' +
+      trades.map((trade) => '<tr><td>' + esc(naraCandidateLabel(trade)) + '<br><span class="muted">' + money(trade.amount) + ' @ ' + fmtPrice(trade.entryPrice) + '</span></td><td>' + esc(date(trade.openedAt)) + '</td><td>' + esc(date(trade.closedAt)) + '</td><td>' + esc(trade.reason) + '</td><td class="' + (trade.pnl >= 0 ? 'pos' : 'neg') + '">' + money(trade.pnl) + '</td></tr>').join('') +
+      '</tbody></table></div></details>' : '') +
+    (skipped.length ? '<details><summary>Kandidat dilewati (' + skipped.length + ')</summary><ul>' + skipped.map((candidate) => '<li>' + esc(naraCandidateLabel(candidate)) + ': ' + esc(candidate.reason) + '</li>').join('') + '</ul></details>' : '');
+}
+
+async function runNaraBacktest() {
+  const button = $("naraBacktestBtn");
+  const box = $("naraBacktestOut");
+  if (button.disabled) return;
+  const account = currentAccount;
+  const snapshot = readNaraForm({ ...settings.autoTrading });
+  button.disabled = true;
+  button.textContent = "Memproses backtest...";
+  box.setAttribute("aria-busy", "true");
+  box.textContent = "Memuat snapshot kandidat dan OHLCV 30 hari dengan batas request API publik. Proses dapat memakan 1-2 menit; riwayat yang hilang tidak diganti data perkiraan.";
+  try {
+    const result = await postJson("/api/agent/auto-trading/backtest", { days: 30, settings: { autoTrading: snapshot } });
+    if (currentAccount === account) renderNaraBacktest(result);
+  } catch (error) {
+    if (currentAccount === account) box.textContent = "Backtest gagal: " + getErrorMessage(error);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Jalankan backtest 30 hari";
+    box.setAttribute("aria-busy", "false");
+  }
+}
+
 /* ---------------- Nara: jalan otomatis tiap 5 menit ----------------
    Hanya berjalan bila Auto Trading LP aktif. Tidak membaca ulang form agar
    nilai yang sedang diedit pengguna tidak tertimpa. */
@@ -4353,6 +4405,7 @@ function init() {
   });
   $("naraRunBtn").addEventListener("click", runNara);
   $("naraV4ScanBtn").addEventListener("click", scanNaraV4Pools);
+  $("naraBacktestBtn").addEventListener("click", runNaraBacktest);
   $("byteSaveBtn").addEventListener("click", async () => {
     settings.tpSl.armed = $("byteArmed").checked;
     settings.tpSl.defaultTpPct = Number($("byteTp").value) || 0;
