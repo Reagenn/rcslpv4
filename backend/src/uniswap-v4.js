@@ -1,5 +1,7 @@
 "use strict";
 
+const { MIN_LIQUIDITY_USD, MIN_VOLUME_24H_USD } = require("./auto-trading-risk");
+
 const UNISWAP_V4_NETWORKS = [
   { networkId: "base", dexId: "uniswap-v4-base", chain: "BASE", chainName: "Base" },
   { networkId: "eth", dexId: "uniswap-v4-ethereum", chain: "ETH", chainName: "Ethereum" },
@@ -11,6 +13,11 @@ const UNISWAP_V4_NETWORKS = [
   { networkId: "avax", dexId: "uniswap-v4-avalanche", chain: "AVALANCHE", chainName: "Avalanche" },
   { networkId: "unichain", dexId: "uniswap-v4-unichain", chain: "UNICHAIN", chainName: "Unichain" },
 ];
+
+function usdPrice(value) {
+  const price = Number(value);
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
 
 function normalizeGeckoPools(network, payload, now, minTvlUsd) {
   const includedTokens = new Map(
@@ -52,8 +59,9 @@ function normalizeGeckoPools(network, payload, now, minTvlUsd) {
       protocol: "Uniswap v4",
       chain: network.chain,
       chainName: network.chainName,
-      token0: toToken(base),
-      token1: toToken(quote),
+      token0: { ...toToken(base), priceUsd: usdPrice(attrs.base_token_price_usd), priceChange: attrs.price_change_percentage },
+      token1: { ...toToken(quote), priceUsd: usdPrice(attrs.quote_token_price_usd) },
+      transactions24h: attrs.transactions?.h24,
       tvlUsd: Math.round(tvlUsd * 100) / 100,
       volume24hUsd: Math.round(volume24hUsd * 100) / 100,
       feePercent,
@@ -86,6 +94,7 @@ function normalizeMeteoraPools(payload, now, minTvlUsd) {
       id: String(token.address),
       symbol: token.symbol || "?",
       name: token.name || token.symbol || "Unknown token",
+      priceUsd: usdPrice(token.price),
     });
     return {
       poolId: pool.address,
@@ -118,4 +127,21 @@ function isPoolTokenAddress(chain, address) {
   return /^0x[a-f0-9]{40}$/i.test(value) && !/^0x0{40}$/i.test(value);
 }
 
-module.exports = { UNISWAP_V4_NETWORKS, normalizeGeckoPools, normalizeMeteoraPools, tokenAddressKey, isPoolTokenAddress };
+function selectAprPoolTokens(pools, at, chains) {
+  const bestByToken = new Map();
+  const minTvl = Math.max(MIN_LIQUIDITY_USD, at.minLiquidity);
+  for (const pool of pools) {
+    if (!chains.includes(pool.chain) || (at.chainFilter !== "ALL" && at.chainFilter !== pool.chain)) continue;
+    if (!Number.isFinite(pool.apr) || pool.apr < at.minApr || !Number.isFinite(pool.tvlUsd) || pool.tvlUsd < minTvl ||
+        !Number.isFinite(pool.volume24hUsd) || pool.volume24hUsd < MIN_VOLUME_24H_USD) continue;
+    for (const token of [pool.token0, pool.token1]) {
+      if (!isPoolTokenAddress(pool.chain, token?.id)) continue;
+      const key = tokenAddressKey(pool.chain, token.id);
+      const previous = bestByToken.get(key);
+      if (!previous || pool.apr > previous.pool.apr) bestByToken.set(key, { chain: pool.chain, address: token.id, token, pool });
+    }
+  }
+  return [...bestByToken.values()].sort((a, b) => b.pool.apr - a.pool.apr);
+}
+
+module.exports = { UNISWAP_V4_NETWORKS, normalizeGeckoPools, normalizeMeteoraPools, tokenAddressKey, isPoolTokenAddress, selectAprPoolTokens };

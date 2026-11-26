@@ -216,7 +216,7 @@ Nara dapat memakai sumber `APR pool · Uniswap v4 + Meteora Solana`. Scanner mem
 
 Uniswap v4 APR indikatif dihitung `(volume 24 jam × fee tier) / TVL × 365 × 100`; Solana/Meteora dihitung `fee 24 jam API / TVL × 365 × 100`. Keduanya bukan jaminan hasil; hook/dynamic fee dapat membuat angka berbeda dari pendapatan LP. Solana bukan Uniswap v4, sehingga hasilnya ditandai `Meteora DLMM` dan memakai sumber terpisah.
 
-Tombol **Preview APR (tanpa trading)** hanya mencari dan menampilkan pool. Setelah preview tersedia, tombol **Jalankan simulasi dari pool APR** menjalankan Nara secara eksplisit setelah konfirmasi; Nara harus aktif, dan kandidat tetap harus ada pada feed analisis serta lolos semua guardrail. Jika tak ada kandidat yang cocok, alasan ditampilkan. Aplikasi tidak mengirim transaksi on-chain.
+Tombol **Preview APR (tanpa trading)** hanya menampilkan pool. Saat simulasi atau backtest memakai sumber APR, Nara mengambil kedua token langsung dari pool yang memenuhi filter chain, APR, dan likuiditas. Token yang sama pada satu chain dinilai sekali, memakai pool dengan APR tertinggi. Token tidak perlu muncul di feed trending DexScreener. Jika harga atau perubahan harga belum tersedia dari pool, Nara mencari data pasar untuk token tersebut. Pemeriksaan GoPlus dan semua batas risiko tetap berlaku. Tombol **Jalankan simulasi dari pool APR** memerlukan Nara aktif dan konfirmasi; aplikasi tidak mengirim transaksi on-chain.
 
 Frontend: modal `#naraModal`, `scanNaraV4Pools()`, `runNara()`. Backend: `runPoolAprScan()`, `POST /api/agent/auto-trading`.
 

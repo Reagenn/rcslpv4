@@ -7,12 +7,11 @@ const {
   HOUR_MS,
   MAX_HISTORY_CANDIDATES,
   backtestSettings,
-  selectNaraCandidates,
   filterBacktestCandidates,
   runNaraBacktest,
 } = require("./src/nara-backtest");
 const { valuePosition } = require("./src/position-valuation");
-const { tokenAddressKey, isPoolTokenAddress } = require("./src/uniswap-v4");
+const { tokenAddressKey, isPoolTokenAddress, selectAprPoolTokens } = require("./src/uniswap-v4");
 
 const FROM = Date.parse("2026-01-01T00:00:00Z");
 const TO = Date.parse("2026-01-31T00:00:00Z");
@@ -110,6 +109,7 @@ function poolFor(candidate, overrides = {}) {
     chain: candidate.chain,
     apr: 100,
     tvlUsd: 120000,
+    volume24hUsd: 60000,
     protocol: candidate.chain === "SOL" ? "Meteora DLMM" : "Uniswap v4",
     poolId: candidate.chain === "SOL" ? SOL_ADDRESS : POOL_ADDRESS,
     poolCreatedAt: POOL_CREATED_AT,
@@ -389,65 +389,49 @@ for (const [field, limit] of [
   });
 }
 
-test("DEX source uses only recommendations and ignores APR enrichment", () => {
-  const recommendation = makeCandidate();
-  const pending = makeCandidate({ address: EVM_ADDRESSES[1] });
-  const agentOut = deepFreeze({ recommendations: [recommendation], pending_candidates: [pending] });
-  const at = makeSettings({ autoTrading: { minApr: 100000 } }).autoTrading;
-  const selected = selectNaraCandidates(agentOut, at, [poolFor(pending)]);
-  assert.deepEqual(selected, [recommendation]);
-  assert.equal(selected[0].pool_apr, undefined);
-  assert.deepEqual(filterBacktestCandidates(selected, at, SNAPSHOT_AT, CHAINS).eligible, [recommendation]);
-});
-
-test("APR source selects the best eligible pool per chain-aware token, including pending candidates", () => {
+test("APR source seeds both tokens directly from their best eligible pool on each chain", () => {
   const base = makeCandidate();
   const eth = makeCandidate({ chain: "ETH", address: base.address.toLowerCase(), symbol: "ETH-TOKEN" });
   const sol = makeCandidate({ chain: "SOL", address: SOL_ADDRESS, symbol: "SOL-TOKEN" });
-  const pending = makeCandidate({ address: EVM_ADDRESSES[1], symbol: "PENDING" });
-  const unmatched = makeCandidate({ address: EVM_ADDRESSES[2], symbol: "UNMATCHED" });
   const highest = poolFor(base, { apr: 200, poolId: EVM_ADDRESSES[3], token0: { id: base.address.toLowerCase() } });
-  const pools = [
+  const pools = deepFreeze([
     poolFor(base, { apr: 100 }), highest,
     poolFor(base, { apr: 999, tvlUsd: 49999 }),
+    poolFor(base, { apr: 800, volume24hUsd: 24999 }),
     poolFor(eth, { apr: 80 }),
     poolFor(sol, { apr: 120, token0: { id: SOL_QUOTE_ADDRESS }, token1: { id: sol.address } }),
-    poolFor(pending, { apr: 150 }),
-  ];
-  const agentOut = { recommendations: [eth, sol, unmatched, base], pending_candidates: [pending] };
-  const snapshot = structuredClone({ agentOut, pools });
-  deepFreeze(agentOut);
-  deepFreeze(pools);
-  const selected = selectNaraCandidates(agentOut, makeSettings({ autoTrading: { source: "UNISWAP_V4" } }).autoTrading, pools);
-  assert.deepEqual(selected.map((candidate) => candidate.symbol), ["ALPHA", "PENDING", "SOL-TOKEN", "ETH-TOKEN"]);
-  assert.deepEqual(selected.map((candidate) => candidate.pool_apr), [200, 150, 120, 80]);
-  assert.equal(selected[0].pool_id, highest.poolId);
-  assert.equal(selected[0].pool_protocol, highest.protocol);
-  assert.equal(selected[0].pool_tvl_usd, highest.tvlUsd);
-  assert.equal(selected[0].pool_created_at, POOL_CREATED_AT);
-  assert.notStrictEqual(selected[0], base);
-  assert.deepEqual({ agentOut, pools }, snapshot);
+    poolFor(sol, { chain: "UNSUPPORTED", apr: 1000 }),
+  ]);
+  const at = makeSettings({ autoTrading: { source: "UNISWAP_V4" } }).autoTrading;
+  const selected = selectAprPoolTokens(pools, at, CHAINS);
+  assert.deepEqual(selected.map((entry) => [entry.chain, entry.address, entry.pool.apr]), [
+    ["BASE", base.address.toLowerCase(), 200], ["BASE", QUOTE_ADDRESS, 200],
+    ["SOL", SOL_QUOTE_ADDRESS, 120], ["SOL", sol.address, 120],
+    ["ETH", eth.address, 80], ["ETH", QUOTE_ADDRESS, 80],
+  ]);
+  assert.equal(selected[0].pool.poolId, highest.poolId);
+  assert.deepEqual(selectAprPoolTokens(pools, { ...at, chainFilter: "ETH" }, CHAINS), selected.slice(-2));
 });
 
 test("APR selection requires inclusive configured APR and pool liquidity minima", () => {
   const candidates = EVM_ADDRESSES.slice(0, 3).map((address, i) => makeCandidate({ address, symbol: "TOKEN" + i }));
   const at = makeSettings({ autoTrading: { source: "UNISWAP_V4", minApr: 50, minLiquidity: 80000 } }).autoTrading;
-  const selected = selectNaraCandidates({ recommendations: candidates }, at, [
+  const selected = selectAprPoolTokens([
     poolFor(candidates[0], { apr: 50, tvlUsd: 80000 }),
     poolFor(candidates[1], { apr: 49.999, tvlUsd: 80000 }),
     poolFor(candidates[2], { apr: 100, tvlUsd: 79999 }),
-  ]);
-  assert.deepEqual(selected.map((candidate) => candidate.address), [candidates[0].address]);
+    poolFor(candidates[2], { apr: NaN }), poolFor(candidates[2], { tvlUsd: null }),
+  ], at, CHAINS);
+  assert.deepEqual(selected.map((candidate) => candidate.address), [candidates[0].address, QUOTE_ADDRESS]);
 });
 
-test("APR source matches EVM casing but preserves Solana Base58 casing", () => {
-  const base = makeCandidate();
+test("APR source preserves distinct Solana mints and ignores invalid token addresses", () => {
   const sol = makeCandidate({ chain: "SOL", address: SOL_ADDRESS, symbol: "SOL" });
   const solCase = makeCandidate({ chain: "SOL", address: SOL_CASE_ADDRESS, symbol: "SOL-CASE" });
-  const selected = selectNaraCandidates({ recommendations: [base, sol, solCase] }, makeSettings({ autoTrading: { source: "UNISWAP_V4" } }).autoTrading, [
-    poolFor(base, { token0: { id: base.address.toLowerCase() } }), poolFor(sol),
-  ]);
-  assert.deepEqual(selected.map((candidate) => candidate.symbol), ["ALPHA", "SOL"]);
+  const selected = selectAprPoolTokens([
+    poolFor(sol), poolFor(solCase, { token1: { id: "not-a-mint" } }),
+  ], makeSettings().autoTrading, CHAINS);
+  assert.deepEqual(selected.map((entry) => entry.address), [SOL_ADDRESS, SOL_QUOTE_ADDRESS, SOL_CASE_ADDRESS]);
 });
 
 test("APR candidate filtering rejects absent, invalid, or below-minimum pool APR", () => {
@@ -460,12 +444,10 @@ test("APR candidate filtering rejects absent, invalid, or below-minimum pool APR
   assert.equal(filterBacktestCandidates([makeCandidate({ pool_apr: 50 })], at, SNAPSHOT_AT, CHAINS).eligible.length, 1);
 });
 
-test("APR selection does not bypass candidate security hard gates", () => {
-  const unsafe = makeCandidate({ agent_analysis: { security_score: 94 } });
+test("a high APR does not bypass candidate security hard gates", () => {
+  const unsafe = makeCandidate({ pool_apr: 1000, agent_analysis: { security_score: 94 } });
   const at = makeSettings({ autoTrading: { source: "UNISWAP_V4" } }).autoTrading;
-  const selected = selectNaraCandidates({ recommendations: [unsafe] }, at, [poolFor(unsafe, { apr: 1000 })]);
-  assert.equal(selected.length, 1);
-  const result = filterBacktestCandidates(selected, at, SNAPSHOT_AT, CHAINS);
+  const result = filterBacktestCandidates([unsafe], at, SNAPSHOT_AT, CHAINS);
   assert.deepEqual(result.eligible, []);
   assert.match(result.skipped[0].reason, /hard-gate 95/);
 });

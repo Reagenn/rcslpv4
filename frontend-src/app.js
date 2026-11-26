@@ -3770,7 +3770,7 @@ async function runNara() {
     $("naraRunOut").innerHTML = '<p class="muted">' + esc(getErrorMessage(e)) + "</p>";
     return;
   }
-  $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara mencocokkan pool APR multi-network dengan kandidat yang lolos guardrail…" : "Nara memindai Top 10 agent API…") + "</p>";
+  $("naraRunOut").innerHTML = '<p class="muted">' + (settings.autoTrading.source === "UNISWAP_V4" ? "Nara memeriksa token dari pool APR, mulai dari APR tertinggi…" : "Nara memindai Top 10 agent API…") + "</p>";
   try {
     const r = await postJson("/api/agent/auto-trading", { action: "run" });
     const lines = [];

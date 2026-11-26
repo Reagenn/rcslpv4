@@ -22,38 +22,59 @@ function installBacktestFetchFixture() {
   const tokens = [11, 12, 13, 14].map(address);
   const pools = [111, 112, 113, 114].map(address);
   const quote = address(999);
+  const aprToken = address(15), noSecurity = address(16), aprPool = "0x" + "ab".repeat(32);
+  const solToken = "A".repeat(32), solQuote = "B".repeat(32), solPool = "C".repeat(32);
+  const createdAt = Date.now() - 60 * 86400000;
+  const changes = { h24: 1, h6: 1, h1: 1, m5: 0 };
   const json = (data) => ({ ok: true, status: 200, json: async () => data });
   global.fetch = async (input) => {
     const url = new URL(input);
     if (url.hostname === "api.dexscreener.com") {
       if (url.pathname === "/token-boosts/latest/v1") return json(tokens.map((tokenAddress) => ({ chainId: "base", tokenAddress })));
-      if (url.pathname.startsWith("/latest/dex/tokens/")) return json({ pairs: tokens.map((token, index) => ({
-        chainId: "base", pairAddress: pools[index], dexId: "fixture", baseToken: { address: token, symbol: "TEST" + index, name: "Fixture " + index },
-        quoteToken: { address: quote, symbol: "USDC" }, priceUsd: "100", priceNative: "100",
-        liquidity: { usd: 120000 }, volume: { h24: 50000, h6: 10000, h1: 2000, m5: 200 },
-        priceChange: { h24: 1, h6: 1, h1: 1, m5: 1 }, txns: { h24: { buys: 500, sells: 500 } },
-        pairCreatedAt: Date.now() - 60 * 86400000,
-      })) });
+      if (url.pathname.startsWith("/latest/dex/tokens/")) {
+        const requested = url.pathname.split("/").pop().split(",");
+        const pairs = tokens.map((token, index) => ({
+          chainId: "base", pairAddress: pools[index], dexId: "fixture", baseToken: { address: token, symbol: "TEST" + index, name: "Fixture " + index },
+          quoteToken: { address: quote, symbol: "USDC" }, priceUsd: "100", priceNative: "100",
+          liquidity: { usd: 120000 }, volume: { h24: 50000, h6: 10000, h1: 2000, m5: 200 },
+          priceChange: changes, txns: { h24: { buys: 500, sells: 500 } }, pairCreatedAt: createdAt,
+        }));
+        pairs.push({ chainId: "solana", pairAddress: solPool, baseToken: { address: solToken }, quoteToken: { address: solQuote },
+          priceUsd: "2", priceNative: "2", priceChange: changes });
+        return json({ pairs: pairs.filter((pair) => requested.includes(pair.baseToken.address) || requested.includes(pair.quoteToken.address)) });
+      }
       return json([]);
     }
     if (url.hostname === "api.gopluslabs.io") {
       const result = {};
-      for (const token of (url.searchParams.get("contract_addresses") || "").split(",")) result[token] = {
+      for (const token of (url.searchParams.get("contract_addresses") || "").split(",").filter((token) => token !== noSecurity)) result[token] = {
         is_honeypot: "0", is_mintable: "0", is_blacklisted: "0", is_open_source: "1", holder_count: "800",
         holders: Array.from({ length: 10 }, () => ({ percent: "0.01" })),
       };
       return json({ result });
     }
-    if (url.hostname === "dlmm.datapi.meteora.ag") return json({ data: [] });
+    if (url.hostname === "dlmm.datapi.meteora.ag") return json({ data: url.searchParams.has("filter_by") ? [] : [{
+      address: solPool, token_x: { address: solToken, symbol: "SOLAPR", price: 2 }, token_y: { address: solQuote, symbol: "QUOTEONLY", price: 1 },
+      created_at: createdAt, tvl: 120000, volume: { "24h": 80000 }, fees: { "24h": 450 },
+    }] });
     if (url.hostname === "api.geckoterminal.com") {
+      if (url.pathname === "/api/v2/networks/base/dexes/uniswap-v4-base/pools") {
+        const pool = (token, poolId) => ({
+          attributes: { address: poolId, name: "Fixture / USDC 0.3%", pool_created_at: new Date(createdAt).toISOString(),
+            reserve_in_usd: "120000", volume_usd: { h24: "120000" }, base_token_price_usd: "17.25", quote_token_price_usd: "1", price_change_percentage: changes },
+          relationships: { base_token: { data: { id: token } }, quote_token: { data: { id: quote } } },
+        });
+        return json({ data: [pool(aprToken, aprPool), pool(noSecurity, address(116))],
+          included: [[aprToken, "APR"], [noSecurity, "NOSEC"], [quote, "USDC"]].map(([id, symbol]) => ({ id, type: "token", attributes: { address: id, symbol } })) });
+      }
       const match = url.pathname.match(/\/pools\/([^/]+)\/ohlcv\/hour$/);
       if (!match) return json({ data: [], included: [] });
-      const index = pools.indexOf(match[1]);
+      const index = [...pools, aprPool].indexOf(match[1]);
       const token = url.searchParams.get("token");
-      if (index < 0 || token !== tokens[index]) throw new Error("Unexpected OHLCV fixture token/pool.");
+      if (index < 0 || token !== [...tokens, aprToken][index]) throw new Error("Unexpected OHLCV fixture token/pool.");
       await new Promise((resolve) => setTimeout(resolve, 150));
       const end = Math.floor((Number(url.searchParams.get("before_timestamp")) + 1) / 3600) * 3600;
-      const change = [10, -10, 0, 5][index];
+      const change = [10, -10, 0, 5, 2][index];
       const ohlcv = Array.from({ length: 720 }, (_, hour) => {
         const open = 100 + change * hour / 720;
         const close = 100 + change * (hour + 1) / 720;
@@ -435,6 +456,42 @@ function installBacktestFetchFixture() {
     assert.equal(result.data.followers, 1, "follower count updated");
     assert.equal(result.data.followingCount, 1, "following count updated for mutual follow");
 
+    const setNara = async (autoTrading) => {
+      const saved = await request("/api/settings", "POST", cookieB, { settings: { autoTrading } });
+      assert.equal(saved.response.status, 200);
+    };
+    const runNara = async () => {
+      const run = await request("/api/agent/auto-trading", "POST", cookieB, { action: "run" });
+      assert.equal(run.response.status, 200);
+      return run.data;
+    };
+    await setNara({ enabled: true, source: "DEX", minApr: 100000, maxPositions: 1, amountPerPosition: 100 });
+    let run = await runNara();
+    assert.deepEqual(run.opened.map((p) => [p.symbol, p.apr]), [["TEST0", null]], "DEX uses its ranked feed and ignores the APR minimum");
+
+    await setNara({ source: "UNISWAP_V4", minApr: 42, maxPositions: 3 });
+    run = await runNara();
+    assert.deepEqual(run.opened.map((p) => [p.symbol, p.protocol, p.price, p.apr]), [
+      ["SOLAPR", "Meteora DLMM", 2, 136.88], ["APR", "Uniswap v4", 17.25, 109.5],
+    ], "both APR sources open pool-only tokens in APR order even with a warm DEX cache");
+    assert.match(run.skipped.find((p) => p.symbol === "NOSEC").reason, /GoPlus/, "APR cannot bypass missing security data");
+    assert.match(run.skipped.find((p) => p.symbol === "QUOTEONLY").reason, /perubahan harga/i, "a quote token cannot borrow the base token's volatility");
+    assert.match(run.skipped.find((p) => p.symbol === "USDC").reason, /aset quote/, "funding asset is still excluded");
+    result = await request("/api/state", "GET", cookieB);
+    assert.equal(result.data.positions.find((p) => p.symbol === "APR").poolAddress, "0x" + "ab".repeat(32));
+    assert.equal(result.data.positions.find((p) => p.symbol === "SOLAPR").poolAddress, "C".repeat(32));
+
+    result = await request("/api/agent/auto-trading/backtest", "POST", cookieB, { settings: { autoTrading: { chainFilter: "BASE" } } });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.data.trades.map((p) => p.symbol), ["APR"], "APR backtest uses the same seed and its selected pool's history");
+    await setNara({ minApr: 100000 });
+    run = await runNara();
+    assert.deepEqual(run.opened, []);
+    assert.match(run.skipped[0].reason, /APR minimum/, "no eligible APR pool gives a reason and does not fall back to DEX");
+    await setNara({ source: "DEX", maxPositions: 4 });
+    run = await runNara();
+    assert.deepEqual(run.opened.map((p) => [p.symbol, p.apr]), [["TEST1", null]], "switching back keeps the DEX candidate set separate");
+
     result = await request("/api/reset", "POST", cookieA, {}, "https://attacker.invalid");
     assert.equal(result.response.status, 403, "cross-origin mutation rejected");
     result = await request("/api/auth/logout", "POST", cookieA, {});
@@ -444,7 +501,7 @@ function installBacktestFetchFixture() {
     result = await request("/api/auth/login", "POST", cookieB, { username: "alice", password: "wrong-password" });
     assert.equal(result.response.status, 404, "legacy password login stays disabled after logout");
 
-    console.log("Smoke tests passed: Google-only auth, USD-based TP/SL, APR normalization, isolated Nara 30-day historical scenarios, and account isolation.");
+    console.log("Smoke tests passed: Google-only auth, USD-based TP/SL, Nara DEX/APR source switching, isolated 30-day historical scenarios, and account isolation.");
   } finally {
     if (child && child.exitCode === null) {
       child.kill();

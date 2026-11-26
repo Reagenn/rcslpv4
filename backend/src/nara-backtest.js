@@ -50,28 +50,6 @@ function backtestSettings(saved, overrides, chains) {
   return result;
 }
 
-// Keep APR token selection identical for manual Nara runs and historical scenarios.
-function selectNaraCandidates(agentOut, at, pools = []) {
-  if (at.source !== "UNISWAP_V4") return agentOut.recommendations || [];
-  const bestByToken = new Map();
-  for (const pool of pools) {
-    if (pool.apr < Number(at.minApr || 0) || pool.tvlUsd < Number(at.minLiquidity || 0)) continue;
-    for (const token of [pool.token0, pool.token1]) {
-      const address = String(token && token.id || "");
-      if (!isPoolTokenAddress(pool.chain, address)) continue;
-      const key = tokenAddressKey(pool.chain, address);
-      if (!bestByToken.has(key) || pool.apr > bestByToken.get(key).apr) bestByToken.set(key, pool);
-    }
-  }
-  return (agentOut.recommendations || []).concat(agentOut.pending_candidates || [])
-    .filter((candidate) => bestByToken.has(tokenAddressKey(candidate.chain, candidate.address)))
-    .map((candidate) => {
-      const pool = bestByToken.get(tokenAddressKey(candidate.chain, candidate.address));
-      return { ...candidate, pool_apr: pool.apr, pool_protocol: pool.protocol, pool_id: pool.poolId,
-        pool_tvl_usd: pool.tvlUsd, pool_created_at: pool.poolCreatedAt };
-    }).sort((a, b) => b.pool_apr - a.pool_apr);
-}
-
 function filterBacktestCandidates(candidates, at, now, chains) {
   const eligible = [];
   const skipped = [];
@@ -228,4 +206,4 @@ function runNaraBacktest({ settings, candidates, histories, from, to, snapshotAt
   };
 }
 
-module.exports = { BACKTEST_DAYS, HOUR_MS, MAX_HISTORY_CANDIDATES, backtestSettings, selectNaraCandidates, filterBacktestCandidates, runNaraBacktest };
+module.exports = { BACKTEST_DAYS, HOUR_MS, MAX_HISTORY_CANDIDATES, backtestSettings, filterBacktestCandidates, runNaraBacktest };

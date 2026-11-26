@@ -20,13 +20,14 @@ const {
   normalizeMeteoraPools,
   tokenAddressKey,
   isPoolTokenAddress,
+  selectAprPoolTokens,
 } = require("./uniswap-v4");
 const { migrateLegacyPositionRisk, positionExitReason } = require("./position-risk");
 const { autoTradingRiskReason } = require("./auto-trading-risk");
 const { pairPriceUsdForToken } = require("./dex-pricing");
 const { verifyGoogleIdToken } = require("./google-auth");
 const { valuePosition } = require("./position-valuation");
-const { BACKTEST_DAYS, HOUR_MS, MAX_HISTORY_CANDIDATES, backtestSettings, selectNaraCandidates, filterBacktestCandidates, runNaraBacktest } = require("./nara-backtest");
+const { BACKTEST_DAYS, HOUR_MS, MAX_HISTORY_CANDIDATES, backtestSettings, filterBacktestCandidates, runNaraBacktest } = require("./nara-backtest");
 const { loadNaraPriceHistories } = require("./historical-prices");
 
 function loadLocalEnv() {
@@ -902,7 +903,23 @@ async function runCandidateAgent() {
   const robinhoodPicked = allPicked.filter((candidate) => candidate.chain === "ROBINHOOD").slice(0, 40);
   const otherPicked = allPicked.filter((candidate) => candidate.chain !== "ROBINHOOD");
   const picked = robinhoodPicked.concat(otherPicked.slice(0, 60 - robinhoodPicked.length));
+  const scored = await analyzeCandidateMarkets(await fetchCandidateMarkets(picked));
+  const sortedAll = scored.slice().sort((a, b) => (b.recommendation_score || 0) - (a.recommendation_score || 0));
+  const ranked = sortedAll.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
+  const rankedAddrs = new Set(ranked.map((c) => c.address));
+  const pending = scored.filter((c) => !rankedAddrs.has(c.address));
+  const out = {
+    fetched_at: new Date().toISOString(),
+    recommendations: ranked,
+    pending_candidates: pending,
+    source_note:
+      "Kandidat pasar berasal dari DEX Screener (boost terbaru/teratas, profil terbaru/baru diperbarui) dan token Uniswap v4 Robinhood Chain. Keamanan dan hitungan holder memakai GoPlus; maksimal 12 token Robinhood tanpa hitungan dari batch dicoba ulang per token. Bila hanya daftar holder tersedia, angka ditandai sebagai batas minimum; data yang tidak tersedia tetap ditampilkan sebagai tidak tersedia, bukan dikarang. Fee/TVL berasal dari Meteora DLMM hanya untuk Solana. Smart LP tidak tersedia dan tidak pernah diperkirakan.",
+  };
+  candidatesCache = { at: now, data: out, userId: activeUserId };
+  return out;
+}
 
+async function fetchCandidateMarkets(picked, baseOnly = false) {
   // DexScreener menerima beberapa alamat token sekaligus (maks. 30), jadi
   // ambil data pair per chain secara batch alih-alih satu request per token.
   const grouped = new Map();
@@ -930,9 +947,10 @@ async function runCandidateAgent() {
       const tokenPairs = pairs.filter((pair) => {
         if (chainFromPair(pair) !== chain) return false;
         return tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ||
-          tokenAddressKey(chain, pair.quoteToken && pair.quoteToken.address) === candidateKey;
+          (!baseOnly && tokenAddressKey(chain, pair.quoteToken && pair.quoteToken.address) === candidateKey);
       });
-      const selected = pickBestPairForToken(tokenPairs, candidate.address, chain);
+      const poolPair = candidate.pool && tokenPairs.find((pair) => tokenAddressKey(chain, pair.pairAddress) === tokenAddressKey(chain, candidate.pool.poolId));
+      const selected = (poolPair && pickBestPairForToken([poolPair], candidate.address, chain)) || pickBestPairForToken(tokenPairs, candidate.address, chain);
       if (!selected) continue;
       const { pair, priceUsd } = selected;
       const token = tokenAddressKey(chain, pair.baseToken && pair.baseToken.address) === candidateKey ? pair.baseToken : pair.quoteToken;
@@ -946,6 +964,49 @@ async function runCandidateAgent() {
       });
     }
   }
+  return enriched;
+}
+
+function hasPriceChanges(changes) {
+  return ["h24", "h1", "h6", "m5"].every((period) => {
+    const value = changes?.[period];
+    return (typeof value === "number" || (typeof value === "string" && value.trim() !== "")) && Number.isFinite(Number(value));
+  });
+}
+
+async function loadNaraCandidates(at) {
+  if (at.source !== "UNISWAP_V4") {
+    const out = await runCandidateAgent();
+    return { candidates: out.recommendations, fetchedAt: out.fetched_at };
+  }
+  const scan = await runPoolAprScan();
+  const picked = selectAprPoolTokens(scan.pools, at, CHAINS);
+  // Price changes from a pair describe its base token, not its quote token.
+  const missingMarket = picked.filter(({ token }) => !token.priceUsd || !hasPriceChanges(token.priceChange));
+  const dexMarkets = await fetchCandidateMarkets(missingMarket, true);
+  const byToken = new Map(dexMarkets.map((entry) => [tokenAddressKey(entry.chain, entry.address), entry]));
+  const enriched = picked.map(({ chain, address, token, pool }) => {
+    const market = byToken.get(tokenAddressKey(chain, address));
+    const priceChange = { ...token.priceChange };
+    for (const [period, change] of Object.entries(market?.pair.priceChange || {})) {
+      if (priceChange[period] == null || priceChange[period] === "") priceChange[period] = change;
+    }
+    return {
+      chain, address, pool, symbol: token.symbol, name: token.name,
+      priceUsd: token.priceUsd ?? market?.priceUsd,
+      sources: [pool.protocol === "Meteora DLMM" ? "Meteora DLMM Data API" : "GeckoTerminal", ...(market ? ["DEX Screener"] : [])],
+      pair: {
+        pairAddress: pool.poolId, pairCreatedAt: pool.poolCreatedAt,
+        baseToken: pool.token0, quoteToken: pool.token1,
+        liquidity: { usd: pool.tvlUsd }, volume: { h24: pool.volume24hUsd }, txns: { h24: pool.transactions24h },
+        priceChange,
+      },
+    };
+  });
+  return { candidates: await analyzeCandidateMarkets(enriched), fetchedAt: scan.fetchedAt };
+}
+
+async function analyzeCandidateMarkets(enriched) {
   // GoPlus security per chain
   const byChain = {};
   for (const e of enriched) (byChain[e.chain] = byChain[e.chain] || []).push(e);
@@ -998,7 +1059,7 @@ async function runCandidateAgent() {
   const feeTvlByAddr = {};
   await Promise.all(
     enriched
-      .filter((e) => e.chain === "SOL")
+      .filter((e) => e.chain === "SOL" && !e.pool)
       .map(async (e) => {
         feeTvlByAddr[e.address] = await meteoraFeeTvlWindows(e.address);
       }),
@@ -1007,7 +1068,7 @@ async function runCandidateAgent() {
   // Pemetaan kandidat ke bentuk PERSIS respons getlprecommendations hosted:
   // field flat snake_case + agent_analysis{} + due_diligence{} + rationale[].
   const analyzedAt = new Date().toISOString();
-  const scored = enriched.map((e) => {
+  return enriched.map((e) => {
     const g = goplusByAddr[tokenAddressKey(e.chain, e.address)] || null;
     const security = goplusSecurityScore(g);
     const reportedHolderCount = g && (g.holder_count ?? g.holders_count);
@@ -1052,7 +1113,7 @@ async function runCandidateAgent() {
     else if (total < 40) verdict = "avoid";
     else verdict = "review";
     const pc = e.pair.priceChange || {};
-    const priceChangeDataAvailable = ["h24", "h1", "h6", "m5"].every((period) => pc[period] != null && Number.isFinite(Number(pc[period])));
+    const priceChangeDataAvailable = hasPriceChanges(pc);
     const vol = e.pair.volume || {};
     const liquidity = round2(e.pair.liquidity?.usd || 0);
     const volume24h = round2(vol.h24 || 0);
@@ -1090,7 +1151,7 @@ async function runCandidateAgent() {
       "Bundling, cabal, same-block buyers, dan riwayat sosial tidak tercakup API publik — tetap periksa manual lewat due diligence.",
       "Data Smart LP tidak tersedia dari sumber publik mana pun dan tidak pernah diisi perkiraan.",
     ].filter(Boolean);
-    const sources = ["DEX Screener"];
+    const sources = e.sources || ["DEX Screener"];
     if (g) sources.push("GoPlus");
     const ft = feeTvlByAddr[e.address] || { m5: null, h1: null, h6: null, h24: null };
     if (ft.h24 != null || ft.h1 != null) sources.push("Meteora DLMM Data API");
@@ -1110,6 +1171,8 @@ async function runCandidateAgent() {
     };
     return {
       address: e.address,
+      ...(e.pool && { pool_apr: e.pool.apr, pool_protocol: e.pool.protocol, pool_id: e.pool.poolId,
+        pool_tvl_usd: e.pool.tvlUsd, pool_created_at: e.pool.poolCreatedAt }),
       agent_analysis: {
         analyzed_at: analyzedAt,
         confidence,
@@ -1166,19 +1229,6 @@ async function runCandidateAgent() {
       volume_m5: vol.m5 || 0,
     };
   });
-  const sortedAll = scored.slice().sort((a, b) => (b.recommendation_score || 0) - (a.recommendation_score || 0));
-  const ranked = sortedAll.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
-  const rankedAddrs = new Set(ranked.map((c) => c.address));
-  const pending = scored.filter((c) => !rankedAddrs.has(c.address));
-  const out = {
-    fetched_at: analyzedAt,
-    recommendations: ranked,
-    pending_candidates: pending,
-    source_note:
-      "Kandidat pasar berasal dari DEX Screener (boost terbaru/teratas, profil terbaru/baru diperbarui) dan token Uniswap v4 Robinhood Chain. Keamanan dan hitungan holder memakai GoPlus; maksimal 12 token Robinhood tanpa hitungan dari batch dicoba ulang per token. Bila hanya daftar holder tersedia, angka ditandai sebagai batas minimum; data yang tidak tersedia tetap ditampilkan sebagai tidak tersedia, bukan dikarang. Fee/TVL berasal dari Meteora DLMM hanya untuk Solana. Smart LP tidak tersedia dan tidak pernah diperkirakan.",
-  };
-  candidatesCache = { at: now, data: out, userId: activeUserId };
-  return out;
 }
 
 /* ---------------- HTTP helpers ---------------- */
@@ -1973,16 +2023,14 @@ async function handleRequest(req, res) {
       const snapshotSettings = backtestSettings(state.settings, b.settings, CHAINS);
       const to = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
       const from = to - BACKTEST_DAYS * 24 * HOUR_MS;
-      let agentOut;
-      let pools = [];
+      let snapshot;
       try {
-        agentOut = await runCandidateAgent();
-        if (snapshotSettings.autoTrading.source === "UNISWAP_V4") pools = (await runPoolAprScan()).pools;
+        snapshot = await loadNaraCandidates(snapshotSettings.autoTrading);
       } catch (error) {
         return sendJson(res, error.statusCode || 502, { error: error.message || "Snapshot kandidat Nara gagal dimuat." });
       }
-      const candidates = JSON.parse(JSON.stringify(selectNaraCandidates(agentOut, snapshotSettings.autoTrading, pools)));
-      const snapshotAt = Date.parse(agentOut.fetched_at) || Date.now();
+      const candidates = JSON.parse(JSON.stringify(snapshot.candidates));
+      const snapshotAt = Date.parse(snapshot.fetchedAt) || Date.now();
       const { eligible } = filterBacktestCandidates(candidates, snapshotSettings.autoTrading, snapshotAt, CHAINS);
       const startingBalances = defaultState().balances;
       // Only local snapshots are used after releasing the per-account request queue.
@@ -2018,18 +2066,15 @@ async function handleRequest(req, res) {
           skipped: [{ symbol: "-", reason: msg }],
         });
       }
-      let agentOut;
-      let v4Pools = [];
+      let candidates;
       try {
-        agentOut = await runCandidateAgent();
-        if (at.source === "UNISWAP_V4") v4Pools = (await runPoolAprScan()).pools;
+        candidates = (await loadNaraCandidates(at)).candidates;
       } catch (e) {
         return sendJson(res, e.statusCode || 502, {
           error: e.message || "Agent analysis gagal. Coba lagi nanti.",
           failedNetworks: e.failedNetworks || [],
         });
       }
-      const candidates = selectNaraCandidates(agentOut, at, v4Pools);
       const opened = [];
       const skipped = [];
       const openAddrs = new Set(state.positions.filter((p) => p.status === "open").map((p) => tokenAddressKey(p.chain, p.address)));
@@ -2137,7 +2182,7 @@ async function handleRequest(req, res) {
         logAgent("Nara", "Membuka LP " + c.symbol + " (" + c.chain + ") sebesar " + at.amountPerPosition + " USDC pada " + price + " USDC.", "ok", r.pos.id);
       }
       if (at.source === "UNISWAP_V4" && !candidates.length) {
-        skipped.push({ symbol: "-", reason: "Tidak ada token pool APR yang cocok dengan feed analisis DEX Screener saat ini. Preview APR tidak otomatis membuka posisi; hanya kandidat yang dianalisis dan lolos semua guardrail yang dapat disimulasikan." });
+        skipped.push({ symbol: "-", reason: "Tidak ada token pool APR pada chain simulasi pilihan yang memenuhi APR minimum, likuiditas minimum, dan batas volume 24 jam." });
       }
       logAgent("Nara", "Auto Trading selesai: " + opened.length + " dibuka, " + skipped.length + " dilewati (PnL hari ini " + today + " USDC).", "info");
       return sendJson(res, 200, { stoppedByDailyLoss: false, todayPnl: today, dailyLossLimit, opened, skipped });
