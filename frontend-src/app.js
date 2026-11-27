@@ -20,7 +20,7 @@
  *   the active feature, and emits optional browser notifications. PWA support
  *   depends on the Notification and Service Worker browser APIs.
  * - Monthly/Card Studio: monthly ledger data flows from `/api/monthly` into the
- *   calendar and a shared canvas renderer used by preview, PNG, and WebM export.
+ *   calendar and a shared canvas renderer. Optional local audio is mixed into WebM only.
  * - Browser wallet: EIP-1193 reads and explicitly confirmed Base Mainnet calls
  *   are isolated from simulation APIs. No private key is read or stored.
  *
@@ -73,6 +73,8 @@ let candidatesData = null;
 let ddContext = null;
 let currentMonth = new Date().toISOString().slice(0, 7);
 let cardBg = createEmptyCardBackground();
+let cardSong = null;
+let cardAudioPreview = null;
 let cardMonthlyCache = null;
 let videoPreviewRaf = null;
 let pendingCardMediaUrl = "";
@@ -2463,8 +2465,125 @@ function startVideoPreviewLoop() {
   tick();
 }
 
-/** Records a WebM card using the same frame renderer as the preview. */
-async function downloadVideoCard(monthly, fileBase) {
+async function selectCardSong(file) {
+  stopCardAudioPreview();
+  if (cardSong?.context && cardSong.context.state !== "closed") cardSong.context.close().catch(() => {});
+  const song = cardSong = file ? {} : null;
+  const start = $("cardAudioStart");
+  start.value = start.max = "0";
+  start.disabled = $("cardAudioPreviewBtn").disabled = $("cardAudioVolume").disabled = true;
+  $("cardRemoveAudioBtn").hidden = !file;
+  $("cardAudioFile").value = "";
+  setMsg("cardAudioInfo", file ? "Membaca " + file.name + "..." : "Belum ada lagu.");
+  if (!file) return;
+
+  try {
+    if (!/\.(mp3|wav|ogg)$/i.test(file.name) && !/^audio\/(mpeg|mp3|(?:x-)?wav|wave|ogg)$/i.test(file.type)) {
+      throw new Error("Pilih file MP3, WAV, atau OGG.");
+    }
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("Browser tidak mendukung Web Audio.");
+    song.context = new AudioContextClass();
+    song.decoding = file.arrayBuffer().then((bytes) => song.context.decodeAudioData(bytes));
+    const buffer = await song.decoding;
+    if (song !== cardSong) return;
+    if (!(buffer.duration > 0) || !Number.isFinite(buffer.duration)) throw new Error("Durasi lagu tidak valid.");
+    song.buffer = buffer;
+    start.max = String(Math.max(0, buffer.duration - 0.5));
+    start.disabled = $("cardAudioPreviewBtn").disabled = $("cardAudioVolume").disabled = false;
+    setMsg("cardAudioInfo", file.name + " (" + buffer.duration.toLocaleString("id-ID") + " detik). Mulai maksimal: " + Number(start.max).toLocaleString("id-ID") + " detik.");
+  } catch (error) {
+    if (song !== cardSong) return;
+    song.error = getErrorMessage(error);
+    if (song.context) song.context.close().catch(() => {});
+    setMsg("cardAudioInfo", "Lagu tidak dapat dibaca. Video akan diunduh tanpa suara. " + song.error, true);
+  }
+}
+
+function clampCardAudioStart() {
+  const input = $("cardAudioStart");
+  const start = Math.min(Number(input.max), Math.max(0, input.valueAsNumber || 0));
+  input.value = String(start);
+  return start;
+}
+
+/** Resume from the click gesture, before waiting for decoding or monthly data. */
+async function readyCardSong(song) {
+  if (song.error) throw new Error(song.error);
+  if (song.context.state !== "running") {
+    let timer;
+    try {
+      // A browser that blocks playback may leave resume() pending instead of rejecting it.
+      await Promise.race([
+        song.context.resume(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Browser tidak mengaktifkan audio.")), 3000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  await song.decoding;
+  if (!song.buffer || song.context.state !== "running") throw new Error(song.error || "Audio tidak siap diputar.");
+}
+
+/** Preview and recorder use the same loop region and gain, but different outputs. */
+function playCardSong(song, output) {
+  if (song.context.state !== "running") throw new Error("Pemutaran lagu terhenti.");
+  const source = song.context.createBufferSource();
+  const gain = song.context.createGain();
+  source.buffer = song.buffer;
+  source.loop = true;
+  source.loopStart = clampCardAudioStart();
+  source.loopEnd = song.buffer.duration;
+  gain.gain.value = $("cardAudioVolume").valueAsNumber / 100;
+  source.connect(gain);
+  try {
+    gain.connect(output);
+    source.start(0, source.loopStart);
+  } catch (error) {
+    source.disconnect();
+    gain.disconnect();
+    throw error;
+  }
+  return { source, gain };
+}
+
+function stopCardSong(playback) {
+  if (!playback) return;
+  playback.source.onended = null;
+  playback.source.stop();
+  playback.source.disconnect();
+  playback.gain.disconnect();
+}
+
+function stopCardAudioPreview() {
+  if (!cardAudioPreview) return;
+  stopCardSong(cardAudioPreview.playback);
+  cardAudioPreview = null;
+  $("cardAudioPreviewBtn").textContent = "Coba dengar";
+}
+
+async function toggleCardAudioPreview() {
+  if (cardAudioPreview) return stopCardAudioPreview();
+  const song = cardSong;
+  if (!song?.buffer || cardRecording) return;
+  const preview = cardAudioPreview = {};
+  $("cardAudioPreviewBtn").textContent = "Hentikan pratinjau";
+  try {
+    await readyCardSong(song);
+    if (preview !== cardAudioPreview) return;
+    preview.playback = playCardSong(song, song.context.destination);
+    preview.playback.source.onended = stopCardAudioPreview;
+    preview.playback.source.stop(song.context.currentTime + CARD_RECORDING_DURATION_MS / 1000);
+  } catch (error) {
+    if (preview !== cardAudioPreview) return;
+    stopCardAudioPreview();
+    setMsg("cardAudioInfo", "Pratinjau lagu gagal: " + getErrorMessage(error), true);
+  }
+}
+
+/** Records a fresh stream on each attempt so a failed audio track cannot affect a silent retry. */
+async function recordCardVideo(monthly, song) {
   if (typeof MediaRecorder !== "function") throw new Error("Browser tidak mendukung perekaman WebM.");
   const canvas = document.createElement("canvas");
   canvas.width = CARD_WIDTH;
@@ -2473,53 +2592,46 @@ async function downloadVideoCard(monthly, fileBase) {
   if (!context || typeof canvas.captureStream !== "function") throw new Error("Browser tidak mendukung ekspor video dari canvas.");
 
   const stream = canvas.captureStream(CARD_VIDEO_FPS);
-  const recorder = new MediaRecorder(stream, { mimeType: "video/webm", videoBitsPerSecond: CARD_VIDEO_BITRATE });
-  const chunks = [];
-  recorder.ondataavailable = (event) => {
-    if (event.data.size) chunks.push(event.data);
-  };
-  const recordingStopped = new Promise((resolve, reject) => {
-    recorder.onstop = resolve;
-    recorder.onerror = (event) => reject(event.error || new Error("Perekaman WebM gagal."));
-  });
-  const video = cardBg.video;
-  const wasPaused = video.paused;
-  const wasLooping = video.loop;
-  video.loop = true;
-
+  let recorder, destination, playback, frame, timer;
   try {
-    try {
-      await video.play();
-    } catch (_) {
-      // A paused source is still exported as a static video frame.
+    if (song) {
+      destination = song.context.createMediaStreamDestination();
+      const [track] = destination.stream.getAudioTracks();
+      if (!track || track.readyState !== "live") throw new Error("Trek audio tidak tersedia.");
+      stream.addTrack(track);
     }
-    recorder.start(200);
-    const startedAt = performance.now();
-    await new Promise((resolve, reject) => {
+    recorder = new MediaRecorder(stream, { mimeType: "video/webm", videoBitsPerSecond: CARD_VIDEO_BITRATE });
+    return await new Promise((resolve, reject) => {
+      const chunks = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+      recorder.onerror = (event) => reject(event.error || new Error("Perekaman WebM gagal."));
+      recorder.onstop = () => chunks.length ? resolve(new Blob(chunks, { type: "video/webm" })) : reject(new Error("Rekaman WebM kosong."));
+      if (song) {
+        destination.stream.getAudioTracks()[0].onended = () => reject(new Error("Trek audio terputus."));
+        song.context.onstatechange = () => { if (song.context.state !== "running") reject(new Error("Pemutaran lagu terhenti.")); };
+      }
       const drawFrame = () => {
         try {
           drawCard(context, CARD_WIDTH, CARD_HEIGHT, monthly);
+          frame = requestAnimationFrame(drawFrame);
         } catch (error) {
           reject(error);
-          return;
         }
-        if (performance.now() - startedAt < CARD_RECORDING_DURATION_MS) requestAnimationFrame(drawFrame);
-        else resolve();
       };
+      recorder.start(200);
+      if (song) playback = playCardSong(song, destination);
+      timer = setTimeout(() => recorder.stop(), CARD_RECORDING_DURATION_MS);
       drawFrame();
     });
-    recorder.stop();
-    await recordingStopped;
   } finally {
-    if (recorder.state !== "inactive") recorder.stop();
-    stream.getTracks().forEach((track) => track.stop());
-    if (wasPaused) video.pause();
-    video.loop = wasLooping;
+    clearTimeout(timer);
+    cancelAnimationFrame(frame);
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (song) song.context.onstatechange = null;
+    stopCardSong(playback);
+    if (destination) destination.stream.getTracks().forEach((track) => track.stop());
+    stream.getVideoTracks().forEach((track) => track.stop());
   }
-
-  const blob = new Blob(chunks, { type: "video/webm" });
-  triggerDownload(URL.createObjectURL(blob), fileBase + ".webm");
-  setMsg("cardMsg", "Video card diunduh: " + fileBase + ".webm");
 }
 
 /** Exports one Monthly Recap frame as a PNG. */
@@ -2539,18 +2651,49 @@ function downloadImageCard(monthly, fileBase) {
 
 /** Coordinates monthly data loading and export while always restoring recording state. */
 async function downloadCard() {
-  const monthly = await fetchMonthlyData();
+  if (cardRecording) return;
   const fileBase = "ReagenCorp-profit-" + currentMonth;
+  const video = cardBg.video;
+  const wasPaused = video?.paused;
+  const wasLooping = video?.loop;
   cardRecording = true;
+  $("cardStudioControls").disabled = $("downloadCardBtnTop").disabled = true;
   try {
-    if (cardBg.type === "video" && cardBg.video) {
-      setMsg("cardMsg", "Merekam video card 10 detik (WebM HD, 12 Mbps)…");
-      await downloadVideoCard(monthly, fileBase);
+    stopCardAudioPreview();
+    if (!video) {
+      downloadImageCard(await fetchMonthlyData(), fileBase);
       return;
     }
-    downloadImageCard(monthly, fileBase);
+    const song = cardSong;
+    setMsg("cardMsg", "Menyiapkan video WebM 10 detik...");
+    const [monthly, audioError] = await Promise.all([fetchMonthlyData(), song && readyCardSong(song).catch(getErrorMessage)]);
+    video.loop = true;
+    await video.play().catch(() => {}); // A paused background still provides a static frame.
+    setMsg("cardMsg", "Merekam video WebM 10 detik...");
+    let warning = audioError;
+    let blob;
+    if (song && !warning) {
+      try {
+        blob = await recordCardVideo(monthly, song);
+      } catch (error) {
+        warning = getErrorMessage(error);
+      }
+    }
+    if (!blob) {
+      if (warning) setMsg("cardMsg", "Audio gagal. Merekam video tanpa suara...", true);
+      blob = await recordCardVideo(monthly);
+    }
+    const filename = fileBase + ".webm";
+    triggerDownload(URL.createObjectURL(blob), filename);
+    const message = warning ? "Video diunduh tanpa suara: " + filename + ". Audio gagal: " + warning : "Video diunduh: " + filename;
+    setMsg("cardMsg", message, Boolean(warning));
   } finally {
+    if (video) {
+      if (wasPaused) video.pause();
+      video.loop = wasLooping;
+    }
     cardRecording = false;
+    $("cardStudioControls").disabled = $("downloadCardBtnTop").disabled = false;
   }
 }
 function triggerDownload(url, name) {
@@ -2584,6 +2727,21 @@ function bindMonthlyCardUi() {
 
   $("bgPickImageBtn").addEventListener("click", () => $("bgImageInput").click());
   $("bgPickVideoBtn").addEventListener("click", () => $("bgVideoInput").click());
+  $("cardPickAudioBtn").addEventListener("click", () => $("cardAudioFile").click());
+  $("cardAudioFile").addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    if (file) selectCardSong(file);
+  });
+  $("cardRemoveAudioBtn").addEventListener("click", () => selectCardSong(null));
+  $("cardAudioPreviewBtn").addEventListener("click", toggleCardAudioPreview);
+  $("cardAudioStart").addEventListener("change", () => {
+    clampCardAudioStart();
+    stopCardAudioPreview();
+  });
+  $("cardAudioVolume").addEventListener("input", (event) => {
+    $("cardAudioVolumeVal").textContent = event.target.value + "%";
+    if (cardAudioPreview?.playback) cardAudioPreview.playback.gain.gain.value = event.target.valueAsNumber / 100;
+  });
   $("downloadCardBtnTop").addEventListener("click", () => {
     downloadCard().catch((error) => setMsg("cardMsg", getErrorMessage(error), true));
   });
@@ -3874,6 +4032,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "monthly") refreshMonthlyView();
+  else stopCardAudioPreview();
   if (name === "toplp" && !candidatesData) loadCandidates(false);
 }
 function openAgentModal(name) {

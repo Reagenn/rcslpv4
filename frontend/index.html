@@ -704,7 +704,7 @@
                   <canvas id="cardCanvas" width="1600" height="1000"></canvas>
                   <video id="bgVideoPreview" muted loop playsinline hidden></video>
                 </div>
-                <div class="card-studio-side">
+                <fieldset id="cardStudioControls" class="card-studio-side" aria-label="Pengaturan Card Studio">
                   <p class="eyebrow">CARD STUDIO</p>
                   <h3>Pilih format dari background-mu</h3>
                   <p class="muted">Input gambar menghasilkan picture card PNG HD. Input video menghasilkan video card WebM HD 10 detik. Preview dan hasil download memakai ukuran default 1600 × 1000 px (landscape).</p>
@@ -719,15 +719,30 @@
                     <div class="actions">
                       <button id="bgRemoveBtn" class="secondary" type="button" hidden>Hapus background</button>
                       <button id="bgPlayBtn" class="secondary" type="button" hidden>Putar / Jeda preview video</button>
-                      <button id="downloadCardBtn" class="primary" type="button">Unduh kartu bulan ini</button>
                     </div>
                   </div>
                   <label
                     >Kecerahan background: <span id="brightnessVal">112%</span>
                     <input id="bgBrightness" type="range" min="80" max="145" value="112" />
                   </label>
-                  <p id="cardMsg" class="muted"></p>
-                </div>
+                  <fieldset class="bg-note card-song">
+                    <legend>Lagu video (opsional)</legend>
+                    <p class="muted">Pilih MP3, WAV, atau OGG dari perangkatmu. File tidak diunggah. Lagu diulang dari detik mulai sampai video selesai. PNG tetap tanpa audio.</p>
+                    <div class="actions">
+                      <button id="cardPickAudioBtn" class="dashed-btn" type="button">Pilih lagu</button>
+                      <button id="cardAudioPreviewBtn" class="secondary" type="button" disabled>Coba dengar</button>
+                      <button id="cardRemoveAudioBtn" class="secondary" type="button" hidden>Hapus lagu</button>
+                    </div>
+                    <input id="cardAudioFile" type="file" accept=".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/x-wav,audio/ogg" hidden />
+                    <div class="two">
+                      <label>Mulai (detik)<input id="cardAudioStart" type="number" min="0" max="0" step="any" value="0" disabled /></label>
+                      <label>Volume: <span id="cardAudioVolumeVal">80%</span><input id="cardAudioVolume" type="range" min="0" max="100" value="80" disabled /></label>
+                    </div>
+                    <p id="cardAudioInfo" class="muted" role="status">Belum ada lagu.</p>
+                  </fieldset>
+                  <button id="downloadCardBtn" class="primary" type="button">Unduh kartu bulan ini</button>
+                  <p id="cardMsg" class="muted" role="status"></p>
+                </fieldset>
               </div>
 
               <div class="month-nav">
